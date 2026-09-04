@@ -14,17 +14,17 @@
 
 ## Key Features
 
-| Feature | Description |
-| --- | --- |
-| **Source Analysis** | Paste Spotify or YouTube URLs to parse tracks/playlists. Detects playlist vs. single tracks automatically. |
-| **Format & Quality** | Choose from FLAC, MP3, M4A, WAV, OPUS, or MP4. Select bitrate (128k–320k or lossless). For video, choose resolution up to 1080p. |
-| **ID3 Tagging** | Embed metadata (title, artist, album, year, track number) and high-res album artwork directly into audio files. |
-| **Naming Patterns** | Three patterns: `Artist - Title`, `01 - Artist - Title`, or `Title Only`. |
-| **Download Folder** | Save tracks directly to a chosen directory instead of ZIP. Supports batch downloading with concurrency. |
-| **Bot Detection Bypass** | Extract cookies from your browser profile (Chrome, Firefox, Safari, Edge, Brave, Opera, Vivaldi) or manually paste Netscape-format cookies. |
-| **Virtualized Track List** | Smooth scrolling with per-row height measurement for thousands of tracks. |
-| **Built-in Media Player** | Inline YouTube preview within the app. |
-| **Cross-Platform** | Packaged as AppImage (Linux), with Windows and macOS builds supported. |
+| Feature                    | Description                                                                                                                                 |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Source Analysis**        | Paste Spotify or YouTube URLs to parse tracks/playlists. Detects playlist vs. single tracks automatically.                                  |
+| **Format & Quality**       | Choose from FLAC, MP3, M4A, WAV, OPUS, or MP4. Select bitrate (128k–320k or lossless). For video, choose resolution up to 1080p.            |
+| **ID3 Tagging**            | Embed metadata (title, artist, album, year, track number) and high-res album artwork directly into audio files.                             |
+| **Naming Patterns**        | Three patterns: `Artist - Title`, `01 - Artist - Title`, or `Title Only`.                                                                   |
+| **Download Folder**        | Save tracks directly to a chosen directory instead of ZIP. Supports batch downloading with concurrency.                                     |
+| **Bot Detection Bypass**   | Extract cookies from your browser profile (Chrome, Firefox, Safari, Edge, Brave, Opera, Vivaldi) or manually paste Netscape-format cookies. |
+| **Virtualized Track List** | Smooth scrolling with per-row height measurement for thousands of tracks.                                                                   |
+| **Built-in Media Player**  | Inline YouTube preview within the app.                                                                                                      |
+| **Cross-Platform**         | Packaged as AppImage (Linux), with Windows and macOS builds supported.                                                                      |
 
 ## Installation
 
@@ -87,19 +87,19 @@ Runs Vite in development mode with Tauri. App runs at `http://localhost:1420` by
 
 All settings are stored in the Tauri backend and persist between sessions. The default configuration:
 
-| Setting | Default | Description |
-| --- | --- | --- |
-| `format` | `flac` | Output audio format |
-| `bitrate` | `lossless` | Audio bitrate (ignored for FLAC/WAV) |
-| `saveInFolder` | `true` | Save to folder vs. ZIP |
-| `skipMissingTracks` | `true` | Skip failed tracks in batch |
-| `namingPattern` | `number_artist_title` | File naming scheme |
-| `embedId3Tags` | `true` | Embed ID3 metadata |
-| `youtubeCookies` | *(empty)* | Manual Netscape cookie text |
-| `cookiesFromBrowser` | *(empty)* | Browser profile extraction mode |
-| `sampleRate` | `44100` | Lossless sample rate |
-| `videoQuality` | *(undefined)* | Video resolution (MP4 only) |
-| `downloadFolder` | `null` | Path to selected download folder |
+| Setting              | Default               | Description                          |
+| -------------------- | --------------------- | ------------------------------------ |
+| `format`             | `flac`                | Output audio format                  |
+| `bitrate`            | `lossless`            | Audio bitrate (ignored for FLAC/WAV) |
+| `saveInFolder`       | `true`                | Save to folder vs. ZIP               |
+| `skipMissingTracks`  | `true`                | Skip failed tracks in batch          |
+| `namingPattern`      | `number_artist_title` | File naming scheme                   |
+| `embedId3Tags`       | `true`                | Embed ID3 metadata                   |
+| `youtubeCookies`     | _(empty)_             | Manual Netscape cookie text          |
+| `cookiesFromBrowser` | _(empty)_             | Browser profile extraction mode      |
+| `sampleRate`         | `44100`               | Lossless sample rate                 |
+| `videoQuality`       | _(undefined)_         | Video resolution (MP4 only)          |
+| `downloadFolder`     | `null`                | Path to selected download folder     |
 
 ### YouTube Bot Detection Bypass
 
@@ -146,12 +146,12 @@ src-tauri/
 
 ### Key Development Commands
 
-| Command | Description |
-| --- | --- |
-| `pnpm dev` | Start development server + Tauri |
-| `pnpm build` | Build the frontend (Vite + TSC) |
-| `pnpm tauri` | Run Tauri commands (build, dev, preview) |
-| `pnpm preview` | Preview the built Vite app |
+| Command        | Description                              |
+| -------------- | ---------------------------------------- |
+| `pnpm dev`     | Start development server + Tauri         |
+| `pnpm build`   | Build the frontend (Vite + TSC)          |
+| `pnpm tauri`   | Run Tauri commands (build, dev, preview) |
+| `pnpm preview` | Preview the built Vite app               |
 
 ### Adding New Features
 
