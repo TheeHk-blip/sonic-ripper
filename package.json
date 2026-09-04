@@ -53,7 +53,7 @@
     "trailingComma": "es5",
     "printWidth": 100,
     "tabWidth": 2,
-    "jsxBracketSameLine": false,
+    "bracketSameLine": false,
     "arrowParens": "avoid",
     "endOfLine": "auto"
   }
