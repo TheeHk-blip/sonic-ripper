@@ -190,7 +190,7 @@ The project is configured to build **AppImage** for Linux (as specified in `taur
 
 ## License
 
-MIT (or specify your license here)
+MIT
 
 ## Acknowledgments
 
