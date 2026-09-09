@@ -27,7 +27,6 @@ jobs:
         with:
           node-version: 'lts/*'
           cache: 'pnpm'
-          cache-dependency-path: embed-worker/pnpm-lock.yaml
 
       - name: Install dependencies
         working-directory: embed-worker
