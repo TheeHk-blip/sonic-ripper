@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "opener:default",
+    "dialog:default",
+    "clipboard-manager:allow-read-text",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "binaries/sonic-yt-dlp", "sidecar": true, "args": true },
+        { "name": "binaries/sonic-ffmpeg", "sidecar": true, "args": true }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@300;400;500;600&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --color-brown: #45261d;
+  --color-olive: #6f6d40;
+  --color-cream: #ede6d6;
+  --color-charcoal: #241712;
+  --color-rust: #b5651d;
+  --color-gold: #c9a227;
+
+  --font-display: 'Fraunces', serif;
+  --font-body: 'Inter', sans-serif;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+}
+
+body {
+  background: var(--color-brown);
+  color: var(--color-cream);
+  font-family: var(--font-body);
+  font-weight: 400;
+  margin: 0;
+}
+
+.title,
+h1,
+h2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.05;
+  margin: 0;
+}
+
+.title {
+  font-size: 34px;
+}
+
+.subtitle {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
+.label {
+  font-family: var(--font-body);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+#dashboard-settings-deck::-webkit-scrollbar {
+  width: 6px;
+}
+#dashboard-settings-deck::-webkit-scrollbar-track {
+  background: var(--color-surface-panel);
+}
+#dashboard-settings-deck::-webkit-scrollbar-thumb {
+  background: var(--color-brand);
+}
