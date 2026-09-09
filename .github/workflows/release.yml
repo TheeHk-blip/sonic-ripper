@@ -26,8 +26,8 @@ jobs:
             rust-target: 'x86_64-pc-windows-msvc'
             args: ''
           - platform: 'macos-latest'
-            rust-target: 'aarch64-apple-darwin,x86_64-apple-darwin'
-            args: '--target universal-apple-darwin'
+            rust-target: 'x86_64-apple-darwin'
+            args: '--target x86_64-apple-darwin'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -50,12 +50,6 @@ jobs:
           toolchain: stable
           target: ${{ matrix.rust-target }}
           cache: true
-
-      - name: Ensure both macOS targets installed
-        if: matrix.platform == 'macos-latest'
-        run: |
-          rustup target add aarch64-apple-darwin
-          rustup target add x86_64-apple-darwin
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -88,22 +82,6 @@ jobs:
       - name: Ensure sidecar binaries are executable
         if: matrix.platform != 'windows-latest'
         run: chmod +x src-tauri/binaries/sonic-yt-dlp-* src-tauri/binaries/sonic-ffmpeg-*
-
-      - name: Create universal macOS sidecar binaries
-        if: matrix.platform == 'macos-latest'
-        run: |
-          lipo -create \
-            src-tauri/binaries/sonic-ffmpeg-aarch64-apple-darwin \
-            src-tauri/binaries/sonic-ffmpeg-x86_64-apple-darwin \
-            -output src-tauri/binaries/sonic-ffmpeg-universal-apple-darwin
-
-          lipo -create \
-            src-tauri/binaries/sonic-yt-dlp-aarch64-apple-darwin \
-            src-tauri/binaries/sonic-yt-dlp-x86_64-apple-darwin \
-            -output src-tauri/binaries/sonic-yt-dlp-universal-apple-darwin
-
-          chmod +x src-tauri/binaries/sonic-ffmpeg-universal-apple-darwin
-          chmod +x src-tauri/binaries/sonic-yt-dlp-universal-apple-darwin
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
