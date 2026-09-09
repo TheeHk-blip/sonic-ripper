@@ -89,6 +89,22 @@ jobs:
         if: matrix.platform != 'windows-latest'
         run: chmod +x src-tauri/binaries/sonic-yt-dlp-* src-tauri/binaries/sonic-ffmpeg-*
 
+      - name: Create universal macOS sidecar binaries
+        if: matrix.platform == 'macos-latest'
+        run: |
+          lipo -create \
+            src-tauri/binaries/sonic-ffmpeg-aarch64-apple-darwin \
+            src-tauri/binaries/sonic-ffmpeg-x86_64-apple-darwin \
+            -output src-tauri/binaries/sonic-ffmpeg-universal-apple-darwin
+
+          lipo -create \
+            src-tauri/binaries/sonic-yt-dlp-aarch64-apple-darwin \
+            src-tauri/binaries/sonic-yt-dlp-x86_64-apple-darwin \
+            -output src-tauri/binaries/sonic-yt-dlp-universal-apple-darwin
+
+          chmod +x src-tauri/binaries/sonic-ffmpeg-universal-apple-darwin
+          chmod +x src-tauri/binaries/sonic-yt-dlp-universal-apple-darwin
+
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
@@ -96,6 +112,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Sonic Ripper v__VERSION__'
