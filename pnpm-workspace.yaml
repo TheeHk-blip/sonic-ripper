@@ -1,5 +1,6 @@
 packages:
   - '.'
+  - 'embed-worker'
 
 allowBuilds:
   esbuild: true
