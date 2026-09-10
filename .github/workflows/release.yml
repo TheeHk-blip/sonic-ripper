@@ -114,7 +114,18 @@ jobs:
             wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
             chmod +x appimagetool
             ./appimagetool squashfs-root "$APPIMAGE"
+            echo "REPACKAGED=true" >> "$GITHUB_ENV"
           else
             echo "libwayland-client.so.0 not bundled — EXCLUDE_LIBS worked, nothing to fix"
+            echo "REPACKAGED=false" >> "$GITHUB_ENV"
           fi
+          echo "APPIMAGE_PATH=$APPIMAGE" >> "$GITHUB_ENV"
           rm -rf squashfs-root appimagetool
+
+      - name: Re-upload fixed AppImage to draft release
+        if: matrix.platform == 'ubuntu-22.04' && env.REPACKAGED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Re-uploading repackaged AppImage to release ${{ github.ref_name }}"
+          gh release upload "${{ github.ref_name }}" "$APPIMAGE_PATH" --repo ${{ github.repository }} --clobber
