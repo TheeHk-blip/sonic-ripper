@@ -64,7 +64,11 @@ jobs:
             patchelf \
             build-essential \
             curl wget file \
-            libfuse2
+            libfuse2 \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-libav
 
       - name: Download sidecar binaries
         shell: bash
@@ -98,6 +102,44 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Verify GStreamer plugins were bundled
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          APPIMAGE=$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name "*.AppImage" | head -n 1)
+          if [ -z "$APPIMAGE" ]; then
+            echo "::error::No AppImage found to verify"
+            exit 1
+          fi
+          echo "Extracting $APPIMAGE to check for bundled GStreamer plugins"
+          "$APPIMAGE" --appimage-extract > /dev/null
+
+          PLUGIN_DIR=$(find squashfs-root -type d -iname "gstreamer-1.0" | head -n 1)
+          if [ -z "$PLUGIN_DIR" ]; then
+            echo "::error::No gstreamer-1.0 plugin directory found in bundled AppImage — video/audio playback will fail at runtime"
+            rm -rf squashfs-root
+            exit 1
+          fi
+
+          echo "Found plugin directory: $PLUGIN_DIR"
+          ls -la "$PLUGIN_DIR"
+
+          PLUGIN_COUNT=$(find "$PLUGIN_DIR" -name "*.so" | wc -l)
+          echo "Bundled $PLUGIN_COUNT GStreamer plugin(s)"
+          if [ "$PLUGIN_COUNT" -lt 1 ]; then
+            echo "::error::gstreamer-1.0 directory exists but contains no .so plugins"
+            rm -rf squashfs-root
+            exit 1
+          fi
+
+          # Sanity-check for the specific decoders YouTube embeds need
+          for lib in libgstlibav libgstvpx libgstopus; do
+            if ! find "$PLUGIN_DIR" -iname "${lib}*.so" | grep -q .; then
+              echo "::warning::Expected plugin '$lib' not found in bundle — some codecs may be missing"
+            fi
+          done
+
+          rm -rf squashfs-root
 
       - name: Fix bundled AppImage (strip conflicting Wayland lib)
         if: matrix.platform == 'ubuntu-22.04'
