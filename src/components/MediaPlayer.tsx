@@ -50,7 +50,7 @@ export default function MediaPlayer({ track, onClose }: MediaPlayerProps) {
     >
       <div className="max-w-7xl mx-auto flex flex-col gap-4">
         {/* Video frame (YouTube only) */}
-        {isYouTube && workerEmbedSrc && (
+        {isYouTube && workerEmbedSrc && import.meta.env.VITE_EMBED_WORKER_URL && (
           <motion.div
             initial={false}
             animate={{

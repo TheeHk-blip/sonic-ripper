@@ -10,10 +10,10 @@
 		"cf-typegen": "wrangler types"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-plugin": "^1.0.0",
-		"@types/node": "^26.3.0",
-		"typescript": "^5.5.2",
-		"vitest": "~4.1.0",
-		"wrangler": "^4"
+		"@cloudflare/vitest-plugin": "^1.1.6",
+		"@types/node": "^26.5.0",
+		"typescript": "^5.8.3",
+		"vitest": "~4.1.11",
+		"wrangler": "^4.130.0"
 	}
 }

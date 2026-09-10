@@ -90,6 +90,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_EMBED_WORKER_URL: ${{ secrets.VITE_EMBED_WORKER_URL }}
           EXCLUDE_LIBS: 'libwayland-client.so.0'
         with:
           tagName: ${{ github.ref_name }}
