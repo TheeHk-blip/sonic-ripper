@@ -1,4 +1,4 @@
-import { useState, useRef, DragEvent, ChangeEvent } from 'react';
+import { useState, useRef, useEffect, DragEvent, ChangeEvent } from 'react';
 import {
   Image,
   ImagePlus,
@@ -14,6 +14,107 @@ import {
 } from 'lucide-react';
 import { useI18n } from '../lib/i18n';
 import { saveCoverImage } from '../lib/api';
+
+export interface SpectrogramPalette {
+  id: string;
+  name: string;
+  gradient: string;
+  accent: string;
+}
+
+export const SPECTROGRAM_PALETTES: SpectrogramPalette[] = [
+  {
+    id: 'magma',
+    name: 'Magma',
+    gradient: 'linear-gradient(90deg, #000004, #51127c, #b73779, #fb8861, #fcfdbf)',
+    accent: '#fb8861',
+  },
+  {
+    id: 'fire',
+    name: 'Fire',
+    gradient: 'linear-gradient(90deg, #000000, #800000, #ff0000, #ff8000, #ffff00)',
+    accent: '#ff8000',
+  },
+  {
+    id: 'plasma',
+    name: 'Plasma',
+    gradient: 'linear-gradient(90deg, #0d0887, #6a00a8, #b12a90, #e16462, #fca636, #f0f921)',
+    accent: '#e16462',
+  },
+  {
+    id: 'viridis',
+    name: 'Viridis',
+    gradient: 'linear-gradient(90deg, #440154, #3b528b, #21918c, #5ec962, #fde725)',
+    accent: '#21918c',
+  },
+  {
+    id: 'rainbow',
+    name: 'Rainbow',
+    gradient:
+      'linear-gradient(90deg, #ff0000, #ff8000, #ffff00, #00ff00, #00ffff, #0000ff, #8000ff)',
+    accent: '#00ffaa',
+  },
+  {
+    id: 'nebulae',
+    name: 'Nebulae',
+    gradient: 'linear-gradient(90deg, #0a081e, #3d1c7a, #852d91, #c8457d, #ff719a)',
+    accent: '#c8457d',
+  },
+  {
+    id: 'cool',
+    name: 'Cool',
+    gradient: 'linear-gradient(90deg, #00ffff, #0080ff, #8000ff, #ff00ff)',
+    accent: '#00ffff',
+  },
+  {
+    id: 'green',
+    name: 'Green Matrix',
+    gradient: 'linear-gradient(90deg, #001100, #004400, #00aa00, #00ff33, #aaffbb)',
+    accent: '#00ff33',
+  },
+  {
+    id: 'cividis',
+    name: 'Cividis',
+    gradient: 'linear-gradient(90deg, #00204d, #414d6b, #7c7b78, #bdaf5e, #ffea46)',
+    accent: '#ffea46',
+  },
+  {
+    id: 'fruit',
+    name: 'Fruit',
+    gradient: 'linear-gradient(90deg, #1a2a00, #4d8000, #ffbb00, #ff5500, #ff0077)',
+    accent: '#ff5500',
+  },
+  {
+    id: 'fiery',
+    name: 'Fiery',
+    gradient: 'linear-gradient(90deg, #000000, #400000, #d02000, #ff8000, #ffff40)',
+    accent: '#ff8000',
+  },
+  {
+    id: 'moreland',
+    name: 'Moreland',
+    gradient: 'linear-gradient(90deg, #3b4cc0, #8cb2e9, #dddddd, #f49a7b, #b40426)',
+    accent: '#8cb2e9',
+  },
+  {
+    id: 'terrain',
+    name: 'Terrain',
+    gradient: 'linear-gradient(90deg, #336699, #339966, #ffcc66, #996633, #ffffff)',
+    accent: '#339966',
+  },
+  {
+    id: 'intensity',
+    name: 'Intensity',
+    gradient: 'linear-gradient(90deg, #000000, #444444, #888888, #cccccc, #ffffff)',
+    accent: '#ffffff',
+  },
+  {
+    id: 'channel',
+    name: 'Stereo Channels',
+    gradient: 'linear-gradient(90deg, #ff3333, #ffff33, #33ff33, #33ffff, #3333ff)',
+    accent: '#33ffff',
+  },
+];
 
 interface AlbumCoverDropzoneProps {
   currentCover?: string;
@@ -53,6 +154,23 @@ export default function AlbumCoverDropzone({
   const { t } = useI18n();
   const [isCollapsed, setIsCollapsed] = useState(true);
   const [spectrogramPalette, setSpectrogramPalette] = useState('magma');
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const paletteDropdownRef = useRef<HTMLDivElement>(null);
+
+  const currentPaletteObj =
+    SPECTROGRAM_PALETTES.find(p => p.id === spectrogramPalette) || SPECTROGRAM_PALETTES[0];
+
+  useEffect(() => {
+    if (!isPaletteOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (paletteDropdownRef.current && !paletteDropdownRef.current.contains(e.target as Node)) {
+        setIsPaletteOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isPaletteOpen]);
+
   const [isDragging, setIsDragging] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
@@ -365,11 +483,11 @@ export default function AlbumCoverDropzone({
               </button>
             )}
 
-            {/* Generate & embed audio spectrogram button with palette selector */}
+            {/* Generate & embed audio spectrogram button with custom palette selector */}
             {onGenerateSpectrogram && (
               <div
                 onClick={e => e.stopPropagation()}
-                className="flex items-center rounded-md border border-olive/50 bg-charcoal/80 overflow-hidden focus-within:border-gold hover:border-rust transition-colors"
+                className="flex items-center rounded-md border border-olive/50 bg-charcoal/80 focus-within:border-gold hover:border-rust transition-colors"
               >
                 <button
                   type="button"
@@ -392,29 +510,77 @@ export default function AlbumCoverDropzone({
                   </span>
                 </button>
 
-                <select
-                  value={spectrogramPalette}
-                  onChange={e => setSpectrogramPalette(e.target.value)}
-                  disabled={disabled || isGeneratingSpectrogram}
-                  className="bg-charcoal text-[11px] text-cream/90 font-mono py-1.5 px-2 pr-3 outline-none cursor-pointer hover:text-gold transition-colors uppercase"
-                  title={t.coverDropzonePaletteLabel}
-                >
-                  <option value="magma">Magma</option>
-                  <option value="fire">Fire</option>
-                  <option value="plasma">Plasma</option>
-                  <option value="viridis">Viridis</option>
-                  <option value="rainbow">Rainbow</option>
-                  <option value="nebulae">Nebulae</option>
-                  <option value="cool">Cool</option>
-                  <option value="green">Green</option>
-                  <option value="cividis">Cividis</option>
-                  <option value="fruit">Fruit</option>
-                  <option value="fiery">Fiery</option>
-                  <option value="moreland">Moreland</option>
-                  <option value="terrain">Terrain</option>
-                  <option value="intensity">Intensity</option>
-                  <option value="channel">Channel</option>
-                </select>
+                {/* Custom Color Palette Dropdown */}
+                <div ref={paletteDropdownRef} className="relative">
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.stopPropagation();
+                      if (!disabled && !isGeneratingSpectrogram) {
+                        setIsPaletteOpen(!isPaletteOpen);
+                      }
+                    }}
+                    disabled={disabled || isGeneratingSpectrogram}
+                    className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-mono uppercase tracking-wider text-cream hover:text-gold bg-charcoal/90 transition-colors cursor-pointer disabled:opacity-50"
+                    title={t.coverDropzonePaletteLabel}
+                  >
+                    {/* Colored preview swatch of current selection */}
+                    <span
+                      className="w-4 h-3 rounded-xs border border-white/30 shadow-xs shrink-0"
+                      style={{ background: currentPaletteObj.gradient }}
+                    />
+                    <span className="font-semibold truncate max-w-[85px]">
+                      {currentPaletteObj.name}
+                    </span>
+                    <ChevronDown
+                      className={`w-3 h-3 text-cream/70 transition-transform ${isPaletteOpen ? 'rotate-180 text-gold' : ''}`}
+                    />
+                  </button>
+
+                  {/* Custom dropdown popover */}
+                  {isPaletteOpen && (
+                    <div
+                      onClick={e => e.stopPropagation()}
+                      className="absolute left-0 sm:left-auto sm:right-0 bottom-full mb-1 sm:bottom-auto sm:top-full sm:mt-1 w-52 bg-charcoal border border-olive/60 rounded-lg shadow-2xl p-1.5 z-50 max-h-60 overflow-y-auto"
+                      style={{
+                        scrollbarWidth: 'thin',
+                        scrollbarColor: 'var(--color-gold) transparent',
+                      }}
+                    >
+                      <div className="text-[10px] uppercase font-bold text-cream/50 px-2 py-1 border-b border-olive/30 mb-1 flex items-center justify-between">
+                        <span>{t.coverDropzonePaletteLabel}</span>
+                        <span className="text-gold font-mono">{SPECTROGRAM_PALETTES.length}</span>
+                      </div>
+                      {SPECTROGRAM_PALETTES.map(p => {
+                        const isSelected = p.id === spectrogramPalette;
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              setSpectrogramPalette(p.id);
+                              setIsPaletteOpen(false);
+                            }}
+                            className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded text-left text-xs transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-olive/40 text-gold font-semibold'
+                                : 'text-cream/80 hover:bg-olive/20 hover:text-cream'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <span
+                                className="w-5 h-3 rounded-xs border border-white/20 shadow-xs shrink-0"
+                                style={{ background: p.gradient }}
+                              />
+                              <span className="truncate">{p.name}</span>
+                            </div>
+                            {isSelected && <Check className="w-3.5 h-3.5 text-gold shrink-0" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
