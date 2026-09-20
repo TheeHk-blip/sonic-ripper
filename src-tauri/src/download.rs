@@ -299,7 +299,7 @@ async fn run_yt_dlp_streaming(
 
                 if trimmed.starts_with("[download] Destination:") {
                     legs_started += 1;
-                    if legs_started > 1 && !emitted_transcoding {
+                    if legs_started > 1 && !emitted_transcoding && !track_id.is_empty() {
                         emitted_transcoding = true;
                         let _ = app.emit(
                             "track-progress",
@@ -317,15 +317,17 @@ async fn run_yt_dlp_streaming(
                 if legs_started <= 1 {
                     if let Some(raw_percent) = parse_yt_dlp_percent(&line) {
                         let stream = stream_labels.first().copied().unwrap_or("audio");
-                        let _ = app.emit(
-                            "track-progress",
-                            TrackProgressPayload {
-                                track_id: track_id.to_string(),
-                                phase: "downloading",
-                                percent: raw_percent,
-                                stream,
-                            },
-                        );
+                        if !track_id.is_empty() {
+                            let _ = app.emit(
+                                "track-progress",
+                                TrackProgressPayload {
+                                    track_id: track_id.to_string(),
+                                    phase: "downloading",
+                                    percent: raw_percent,
+                                    stream,
+                                },
+                            );
+                        }
                     }
                 }
             }
@@ -1438,8 +1440,8 @@ pub async fn generate_track_spectrogram(
         cookies_from_browser: cookies_from_browser.as_deref(),
     };
 
-    // 1. Download raw audio from stream
-    let raw_audio = download_audio(&app, &track.id, preview_url, work_dir.path(), auth).await?;
+    // 1. Download raw audio from stream (silent, no progress events emitted to UI)
+    let raw_audio = download_audio(&app, "", preview_url, work_dir.path(), auth).await?;
 
     // 2. Output spectrogram PNG path
     let spec_path = work_dir.path().join("spectrogram.png");

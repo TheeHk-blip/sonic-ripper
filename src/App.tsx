@@ -75,7 +75,11 @@ export default function App() {
   const [isAlbum, setIsAlbum] = useState<boolean>(false);
   const [isPlaylist, setIsPlaylist] = useState(false);
   const [selectedTrackIndex, setSelectedTrackIndex] = useState<number>(0);
-  const [applyCoverToAll, setApplyCoverToAll] = useState<boolean>(true);
+  const [applyCoverToAll, setApplyCoverToAll] = useState<boolean>(false);
+  const [spectrogramProgress, setSpectrogramProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
   const [playingTrack, setPlayingTrack] = useState<Track | null>(null);
   const [settings, setSettings] = useState<DownloadSettings>({
     format: 'flac',
@@ -154,7 +158,7 @@ export default function App() {
     setPlaylistName('');
     setIsAlbum(false);
     setSelectedTrackIndex(0);
-    setApplyCoverToAll(true);
+    setApplyCoverToAll(false);
 
     try {
       const data = await analyzeLink(sourceInput);
@@ -377,7 +381,7 @@ export default function App() {
     setPlaylistName('');
     setIsAlbum(false);
     setSelectedTrackIndex(0);
-    setApplyCoverToAll(true);
+    setApplyCoverToAll(false);
     setError(null);
   };
 
@@ -428,18 +432,62 @@ export default function App() {
   };
 
   const handleGenerateSpectrogram = async () => {
-    if (!activeTrack) return;
+    if (tracks.length === 0) return;
+
     try {
       setError(null);
-      const specDataUrl = await generateTrackSpectrogram(
-        activeTrack,
-        settings.youtubeCookies,
-        settings.cookiesFromBrowser
-      );
-      handleCoverChange(specDataUrl);
+
+      if (!applyCoverToAll) {
+        if (!activeTrack) return;
+        const specDataUrl = await generateTrackSpectrogram(
+          activeTrack,
+          settings.youtubeCookies,
+          settings.cookiesFromBrowser
+        );
+        setTracks(prev =>
+          prev.map((t, idx) => (idx === selectedTrackIndex ? { ...t, coverUrl: specDataUrl } : t))
+        );
+      } else {
+        setSpectrogramProgress({ current: 0, total: tracks.length });
+        let completed = 0;
+        const concurrency = Math.min(2, tracks.length);
+        let nextIndex = 0;
+
+        const worker = async () => {
+          while (nextIndex < tracks.length) {
+            const idx = nextIndex++;
+            const track = tracks[idx];
+            if (!track.previewUrl) {
+              completed++;
+              setSpectrogramProgress({ current: completed, total: tracks.length });
+              continue;
+            }
+
+            try {
+              const specDataUrl = await generateTrackSpectrogram(
+                track,
+                settings.youtubeCookies,
+                settings.cookiesFromBrowser
+              );
+              setTracks(prev =>
+                prev.map((t, i) => (i === idx ? { ...t, coverUrl: specDataUrl } : t))
+              );
+            } catch (err) {
+              console.warn(`Spectrogram generation failed for "${track.title}":`, err);
+            } finally {
+              completed++;
+              setSpectrogramProgress({ current: completed, total: tracks.length });
+            }
+          }
+        };
+
+        await Promise.all(Array.from({ length: concurrency }, worker));
+      }
     } catch (err) {
       console.error('Failed to generate spectrogram:', err);
       setError(friendlyError(err, t) || t.errGeneric);
+    } finally {
+      setSpectrogramProgress(null);
     }
   };
 
@@ -701,6 +749,7 @@ export default function App() {
                   onCoverChange={handleCoverChange}
                   onResetCover={handleResetCover}
                   onGenerateSpectrogram={handleGenerateSpectrogram}
+                  spectrogramProgress={spectrogramProgress}
                   disabled={isBatchDownloading || isFolderDownloading}
                   trackTitle={activeTrack?.title}
                   trackArtist={activeTrack?.artist}

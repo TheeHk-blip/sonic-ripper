@@ -28,6 +28,7 @@ interface AlbumCoverDropzoneProps {
   onPrevTrack?: () => void;
   onNextTrack?: () => void;
   onGenerateSpectrogram?: () => Promise<void>;
+  spectrogramProgress?: { current: number; total: number } | null;
 }
 
 export default function AlbumCoverDropzone({
@@ -40,11 +41,12 @@ export default function AlbumCoverDropzone({
   trackArtist,
   selectedTrackIndex = 0,
   totalTracks = 1,
-  applyToAll = true,
+  applyToAll = false,
   onToggleApplyToAll,
   onPrevTrack,
   onNextTrack,
   onGenerateSpectrogram,
+  spectrogramProgress,
 }: AlbumCoverDropzoneProps) {
   const { t } = useI18n();
   const [isDragging, setIsDragging] = useState(false);
@@ -309,7 +311,9 @@ export default function AlbumCoverDropzone({
                 )}
                 <span>
                   {isGeneratingSpectrogram
-                    ? t.coverDropzoneGeneratingSpectrogram
+                    ? spectrogramProgress
+                      ? `${t.coverDropzoneGeneratingSpectrogram} (${spectrogramProgress.current}/${spectrogramProgress.total})`
+                      : t.coverDropzoneGeneratingSpectrogram
                     : t.coverDropzoneSpectrogramBtn}
                 </span>
               </button>
@@ -359,17 +363,8 @@ export default function AlbumCoverDropzone({
                   />
                 </button>
 
-                <span className="text-xs font-semibold uppercase tracking-wider text-cream flex items-center gap-1.5">
+                <span className="text-xs font-semibold uppercase tracking-wider text-cream">
                   {t.coverDropzoneApplyToAllLabel}
-                  <span
-                    className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
-                      applyToAll
-                        ? 'bg-gold/30 text-gold border border-gold/40'
-                        : 'bg-charcoal text-cream/50 border border-olive/40'
-                    }`}
-                  >
-                    {applyToAll ? 'ON' : 'OFF'}
-                  </span>
                 </span>
               </div>
 
