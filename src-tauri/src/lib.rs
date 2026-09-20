@@ -103,8 +103,10 @@ pub fn run() {
             analyze,
             download::download_track,
             download::download_batch,
+            download::save_cover_file,
             settings::get_settings,
-            settings::set_download_folder
+            settings::set_download_folder,
+            settings::set_naming_pattern
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -42,10 +42,13 @@ pub struct DownloadOptions {
     pub video_quality: Option<String>,
     pub naming_pattern: String,
     pub embed_id3_tags: bool,
+    pub playlist_name: Option<String>,
 }
 
 fn resolve_naming_template(pattern: &str) -> &str {
     match pattern {
+        "artist_year_album_track_title" => "{artist}/{year} - {album}/{trackNumber} - {title}",
+        "artist_album_track_title" => "{artist}/{album}/{trackNumber} - {title}",
         "number_artist_title" => "{trackNumber} - {artist} - {title}",
         "artist_title" => "{artist} - {title}",
         "title_artist" => "{title} - {artist}",
@@ -54,30 +57,188 @@ fn resolve_naming_template(pattern: &str) -> &str {
     }
 }
 
-fn render_filename(pattern: &str, track: &Track, extension: &str) -> String {
-    let template = resolve_naming_template(pattern);
-    let track_number = format!("{:02}", track.track_number);
-    let rendered = template
-        .replace("{artist}", &track.artist)
-        .replace("{title}", &track.title)
-        .replace("{album}", &track.album)
-        .replace("{year}", &track.year)
-        .replace("{trackNumber}", &track_number);
+fn sanitize_tag_field(val: &str) -> String {
+    val.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
 
-    let sanitized: String = rendered
+fn sanitize_path_segment(segment: &str, fallback: &str) -> String {
+    let sanitized: String = segment
         .chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             c => c,
         })
         .collect();
-    let trimmed = sanitized.trim();
-    let base = if trimmed.is_empty() {
-        format!("{} - {}", track.artist, track.title)
+
+    let trimmed = sanitized
+        .trim()
+        .trim_matches(|c: char| c == '.' || c == ' ' || c == '-' || c == '_');
+
+    if trimmed.is_empty() {
+        fallback.to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+fn render_relative_path(
+    pattern: &str,
+    track: &Track,
+    extension: &str,
+    playlist_name: Option<&str>,
+) -> PathBuf {
+    let raw_template = resolve_naming_template(pattern);
+    let raw_trimmed = raw_template.trim();
+    let template = if raw_trimmed.is_empty() {
+        "{artist} - {title}"
+    } else {
+        raw_trimmed
     };
-    format!("{base}.{extension}")
+
+    let track_number = if track.track_number > 0 {
+        format!("{:02}", track.track_number)
+    } else {
+        "01".to_string()
+    };
+    let total_tracks = if track.total_tracks > 0 {
+        format!("{:02}", track.total_tracks)
+    } else {
+        "".to_string()
+    };
+
+    let safe_artist = sanitize_tag_field(&track.artist);
+    let safe_title = sanitize_tag_field(&track.title);
+    let safe_album = sanitize_tag_field(&track.album);
+    let safe_year = sanitize_tag_field(&track.year);
+    let fallback_pl = if track.album.is_empty() { "Playlist" } else { &track.album };
+    let safe_playlist = sanitize_tag_field(playlist_name.unwrap_or(fallback_pl));
+
+    let mut rendered = template.to_string();
+
+    // Artist tokens
+    for token in &[
+        "{artist}",
+        "{artista}",
+        "{nombre Artista}",
+        "{nombre_artista}",
+        "{nombreArtista}",
+    ] {
+        rendered = rendered.replace(token, &safe_artist);
+    }
+
+    // Album tokens
+    for token in &[
+        "{album}",
+        "{nombre album}",
+        "{nombre_album}",
+        "{nombreAlbum}",
+    ] {
+        rendered = rendered.replace(token, &safe_album);
+    }
+
+    // Year tokens
+    for token in &[
+        "{year}",
+        "{año}",
+        "{ano}",
+        "{albumYear}",
+        "{album_year}",
+        "{año del album}",
+        "{ano del album}",
+        "{año_del_album}",
+        "{ano_del_album}",
+    ] {
+        rendered = rendered.replace(token, &safe_year);
+    }
+
+    // Track number tokens
+    for token in &[
+        "{trackNumber}",
+        "{track_number}",
+        "{track}",
+        "{pista}",
+        "{numero de pista}",
+        "{numero_de_pista}",
+        "{numeroPista}",
+        "{numero}",
+    ] {
+        rendered = rendered.replace(token, &track_number);
+    }
+
+    // Title tokens
+    for token in &[
+        "{title}",
+        "{titulo}",
+        "{titulo de la pista}",
+        "{titulo_de_la_pista}",
+        "{tituloPista}",
+        "{nombre pista}",
+        "{nombre_pista}",
+    ] {
+        rendered = rendered.replace(token, &safe_title);
+    }
+
+    // Total tracks tokens
+    for token in &[
+        "{totalTracks}",
+        "{total_tracks}",
+        "{total pistas}",
+        "{total_pistas}",
+        "{totalPistas}",
+    ] {
+        rendered = rendered.replace(token, &total_tracks);
+    }
+
+    // Playlist tokens
+    for token in &[
+        "{playlist}",
+        "{playlistName}",
+        "{playlist_name}",
+        "{lista}",
+    ] {
+        rendered = rendered.replace(token, &safe_playlist);
+    }
+
+    // Trim leading and trailing slashes so the path stays relative
+    let trimmed_rendered = rendered.trim_matches(['/', '\\']);
+
+    // Split by '/' or '\'
+    let raw_parts: Vec<&str> = trimmed_rendered
+        .split(['/', '\\'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .collect();
+
+    let mut path = PathBuf::new();
+    let fallback_artist = if safe_artist.is_empty() { "Unknown Artist" } else { &safe_artist };
+    let fallback_title = if safe_title.is_empty() { "Unknown Track" } else { &safe_title };
+
+    if raw_parts.is_empty() {
+        let fallback_file = format!("{fallback_artist} - {fallback_title}.{extension}");
+        path.push(fallback_file);
+        return path;
+    }
+
+    for (idx, part) in raw_parts.iter().enumerate() {
+        let is_last = idx + 1 == raw_parts.len();
+        if is_last {
+            let default_name = format!("{fallback_artist} - {fallback_title}");
+            let sanitized_file = sanitize_path_segment(part, &default_name);
+            path.push(format!("{sanitized_file}.{extension}"));
+        } else {
+            let sanitized_dir = sanitize_path_segment(part, "Folder");
+            path.push(sanitized_dir);
+        }
+    }
+
+    path
 }
 
 fn codec_and_extension(format: &str) -> (&'static str, &'static str) {
@@ -329,17 +490,127 @@ async fn download_video(
     ))
 }
 
-async fn download_cover(cover_url: &str, work_dir: &Path) -> Option<PathBuf> {
-    if cover_url.is_empty() {
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    const DECODE_TABLE: [i8; 256] = {
+        let mut table = [-1i8; 256];
+        let mut i = 0u8;
+        while i < 26 {
+            table[(b'A' + i) as usize] = i as i8;
+            table[(b'a' + i) as usize] = (i + 26) as i8;
+            i += 1;
+        }
+        let mut d = 0u8;
+        while d < 10 {
+            table[(b'0' + d) as usize] = (d + 52) as i8;
+            d += 1;
+        }
+        table[b'+' as usize] = 62;
+        table[b'/' as usize] = 63;
+        table
+    };
+
+    let cleaned: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if cleaned.is_empty() || cleaned.len() % 4 != 0 {
         return None;
     }
+
+    let mut out = Vec::with_capacity((cleaned.len() / 4) * 3);
+    for chunk in cleaned.chunks_exact(4) {
+        let b0 = DECODE_TABLE[chunk[0] as usize];
+        let b1 = DECODE_TABLE[chunk[1] as usize];
+        if b0 < 0 || b1 < 0 {
+            return None;
+        }
+        out.push(((b0 as u8) << 2) | ((b1 as u8) >> 4));
+
+        if chunk[2] == b'=' {
+            if chunk[3] != b'=' {
+                return None;
+            }
+            break;
+        }
+        let b2 = DECODE_TABLE[chunk[2] as usize];
+        if b2 < 0 {
+            return None;
+        }
+        out.push(((b1 as u8) << 4) | ((b2 as u8) >> 2));
+
+        if chunk[3] == b'=' {
+            break;
+        }
+        let b3 = DECODE_TABLE[chunk[3] as usize];
+        if b3 < 0 {
+            return None;
+        }
+        out.push(((b2 as u8) << 6) | (b3 as u8));
+    }
+    Some(out)
+}
+
+async fn download_cover(cover_url: &str, work_dir: &Path) -> Option<PathBuf> {
+    let trimmed = cover_url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // 1. Data URL (e.g. data:image/jpeg;base64,... or data:image/png;base64,...)
+    if trimmed.starts_with("data:") {
+        if let Some((header, b64_data)) = trimmed.split_once(',') {
+            let ext = if header.contains("png") {
+                "png"
+            } else if header.contains("webp") {
+                "webp"
+            } else if header.contains("gif") {
+                "gif"
+            } else {
+                "jpg"
+            };
+            if let Some(bytes) = base64_decode(b64_data) {
+                let path = work_dir.join(format!("cover.{ext}"));
+                if fs::write(&path, &bytes).await.is_ok() {
+                    return Some(path);
+                }
+            }
+        }
+        return None;
+    }
+
+    // 2. Local file path or file:// URL
+    let local_file_path = if let Some(stripped) = trimmed.strip_prefix("file://") {
+        Some(PathBuf::from(stripped))
+    } else {
+        let p = Path::new(trimmed);
+        if p.is_file() {
+            Some(p.to_path_buf())
+        } else {
+            None
+        }
+    };
+
+    if let Some(src) = local_file_path {
+        if src.is_file() {
+            let ext = src
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("jpg");
+            let path = work_dir.join(format!("cover.{ext}"));
+            if let Ok(bytes) = fs::read(&src).await {
+                if fs::write(&path, &bytes).await.is_ok() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    // 3. Remote HTTP / HTTPS URL
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
         .pool_max_idle_per_host(2)
         .build()
         .ok()?;
     let res = client
-        .get(cover_url)
+        .get(trimmed)
         .header(reqwest::header::ACCEPT, "image/*,*/*;q=0.8")
         .send()
         .await
@@ -501,6 +772,10 @@ async fn build_ffmpeg_args(
         args.push("yuvj420p".into());
         args.push("-disposition:v".into());
         args.push("attached_pic".into());
+        args.push("-metadata:s:v".into());
+        args.push("comment=Cover (front)".into());
+        args.push("-metadata:s:v".into());
+        args.push("title=Cover (front)".into());
     }
 
     let mut metadata_file_index: Option<usize> = None;
@@ -538,8 +813,10 @@ async fn build_ffmpeg_args(
         args.push("-map_metadata".into());
         args.push(idx.to_string());
     } else if opts.embed_id3_tags {
-        args.push("-id3v2_version".into());
-        args.push("3".into());
+        if ext == "mp3" {
+            args.push("-id3v2_version".into());
+            args.push("3".into());
+        }
         for (key, value) in [
             ("title", track.title.as_str()),
             ("artist", track.artist.as_str()),
@@ -556,6 +833,25 @@ async fn build_ffmpeg_args(
             "track={}/{}",
             track.track_number, track.total_tracks
         ));
+
+        if ext == "flac" {
+            args.push("-metadata".into());
+            args.push(format!("tracknumber={}", track.track_number));
+            args.push("-metadata".into());
+            args.push(format!("totaltracks={}", track.total_tracks));
+            args.push("-metadata".into());
+            args.push(format!("tracktotal={}", track.total_tracks));
+
+            if has_art {
+                if let Some(path) = cover_in {
+                    if let Ok(bytes) = std::fs::read(path) {
+                        let b64 = build_opus_picture_metadata(&bytes, mime_type_for_cover(path));
+                        args.push("-metadata".into());
+                        args.push(format!("METADATA_BLOCK_PICTURE={b64}"));
+                    }
+                }
+            }
+        }
     }
 
     args.push(out_path.to_string_lossy().into());
@@ -709,9 +1005,16 @@ async fn run_audio_pipeline(
     let cover_path = cover_handle.await.ok().flatten();
 
     let (_, extension) = codec_and_extension(&opts.format);
-    let filename = render_filename(&opts.naming_pattern, track, extension);
-    fs::create_dir_all(dest_folder).await?;
-    let out_path = dest_folder.join(&filename);
+    let rel_path = render_relative_path(
+        &opts.naming_pattern,
+        track,
+        extension,
+        opts.playlist_name.as_deref(),
+    );
+    let out_path = dest_folder.join(&rel_path);
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
     let _ = app.emit(
         "track-progress",
         TrackProgressPayload {
@@ -760,9 +1063,16 @@ async fn run_video_pipeline(
     )
     .await?;
 
-    let filename = render_filename(&opts.naming_pattern, track, container);
-    fs::create_dir_all(dest_folder).await?;
-    let out_path = dest_folder.join(&filename);
+    let rel_path = render_relative_path(
+        &opts.naming_pattern,
+        track,
+        container,
+        opts.playlist_name.as_deref(),
+    );
+    let out_path = dest_folder.join(&rel_path);
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
 
     let _ = app.emit(
         "track-progress",
@@ -787,14 +1097,20 @@ pub async fn download_track(
     opts: DownloadTrackArgs,
 ) -> AppResult<String> {
     let base_folder = settings::require_download_folder(&app).await?;
-    let dest_folder = match opts
-        .album_folder
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(name) => base_folder.join(sanitize_path_component(name, "Untitled")),
-        None => base_folder,
+    let template = resolve_naming_template(&opts.naming_pattern);
+    let has_subfolders = template.contains('/') || template.contains('\\');
+    let dest_folder = if has_subfolders {
+        base_folder
+    } else {
+        match opts
+            .album_folder
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(name) => base_folder.join(sanitize_path_component(name, "Untitled")),
+            None => base_folder,
+        }
     };
     let options = opts.into_download_options();
     let path = run_pipeline(&app, &track, &dest_folder, &options).await?;
@@ -814,6 +1130,8 @@ pub struct DownloadTrackArgs {
     pub embed_id3_tags: bool,
     #[serde(default)]
     pub album_folder: Option<String>,
+    #[serde(default)]
+    pub playlist_name: Option<String>,
 }
 
 impl DownloadTrackArgs {
@@ -827,6 +1145,7 @@ impl DownloadTrackArgs {
             video_quality: self.video_quality,
             naming_pattern: self.naming_pattern,
             embed_id3_tags: self.embed_id3_tags,
+            playlist_name: self.playlist_name,
         }
     }
 }
@@ -873,6 +1192,7 @@ pub async fn download_batch(
         video_quality: args.video_quality.clone(),
         naming_pattern: args.naming_pattern.clone(),
         embed_id3_tags: args.embed_id3_tags,
+        playlist_name: Some(args.playlist_name.clone()),
     });
 
     let batch_work_dir = if save_in_folder {
@@ -959,7 +1279,7 @@ pub async fn download_batch(
 
     fs::create_dir_all(&base_folder).await?;
     let zip_path = base_folder.join(format!("{collection_name}.zip"));
-    write_zip(&output_entries, &zip_path)?;
+    write_zip(&batch_dir_path, &output_entries, &zip_path)?;
 
     Ok(zip_path.to_string_lossy().to_string())
 }
@@ -980,20 +1300,26 @@ fn sanitize_path_component(name: &str, default: &str) -> String {
     }
 }
 
-fn write_zip(files: &[PathBuf], zip_path: &Path) -> AppResult<()> {
+fn write_zip(base_dir: &Path, files: &[PathBuf], zip_path: &Path) -> AppResult<()> {
     let file = std::fs::File::create(zip_path)?;
     let mut writer = zip::ZipWriter::new(file);
     let options: zip::write::FileOptions<()> =
         zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
     for path in files {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("track")
-            .to_string();
+        let rel_name = path
+            .strip_prefix(base_dir)
+            .ok()
+            .and_then(|p| p.to_str())
+            .map(|s| s.replace('\\', "/"))
+            .unwrap_or_else(|| {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("track")
+                    .to_string()
+            });
         writer
-            .start_file(name, options)
+            .start_file(rel_name, options)
             .map_err(|e| AppError::Other(format!("zip error: {e}")))?;
         let bytes = std::fs::read(path)?;
         use std::io::Write;
@@ -1006,3 +1332,198 @@ fn write_zip(files: &[PathBuf], zip_path: &Path) -> AppResult<()> {
         .map_err(|e| AppError::Other(format!("zip finish error: {e}")))?;
     Ok(())
 }
+
+#[tauri::command]
+pub async fn save_cover_file(cover_url: String, target_path: String) -> Result<(), AppError> {
+    let trimmed = cover_url.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Other("No cover URL provided".into()));
+    }
+
+    let dest = PathBuf::from(&target_path);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).await.ok();
+    }
+
+    // 1. Data URL
+    if trimmed.starts_with("data:") {
+        if let Some((_, b64_data)) = trimmed.split_once(',') {
+            if let Some(bytes) = base64_decode(b64_data) {
+                fs::write(&dest, &bytes)
+                    .await
+                    .map_err(|e| AppError::Other(format!("Failed to write cover image: {e}")))?;
+                return Ok(());
+            }
+        }
+        return Err(AppError::Other("Invalid base64 cover data".into()));
+    }
+
+    // 2. Local file
+    let local_file_path = if let Some(stripped) = trimmed.strip_prefix("file://") {
+        Some(PathBuf::from(stripped))
+    } else {
+        let p = Path::new(trimmed);
+        if p.is_file() {
+            Some(p.to_path_buf())
+        } else {
+            None
+        }
+    };
+
+    if let Some(src) = local_file_path {
+        fs::copy(&src, &dest)
+            .await
+            .map_err(|e| AppError::Other(format!("Failed to copy cover image: {e}")))?;
+        return Ok(());
+    }
+
+    // 3. Remote HTTP / HTTPS URL
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+        .build()
+        .map_err(|e| AppError::Other(format!("HTTP client error: {e}")))?;
+
+    let res = client
+        .get(trimmed)
+        .header(reqwest::header::ACCEPT, "image/*,*/*;q=0.8")
+        .send()
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to download cover image: {e}")))?;
+
+    if !res.status().is_success() {
+        return Err(AppError::Other(format!(
+            "Server returned status {} when downloading cover image",
+            res.status()
+        )));
+    }
+
+    let bytes = res
+        .bytes()
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to read cover image bytes: {e}")))?;
+
+    fs::write(&dest, &bytes)
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to write cover image file: {e}")))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_custom_user_path_template() {
+        let track = Track {
+            id: "1".into(),
+            title: "One More Time".into(),
+            artist: "Daft Punk".into(),
+            album: "Discovery".into(),
+            year: "2001".into(),
+            track_number: 1,
+            total_tracks: 14,
+            duration: 320,
+            cover_url: "".into(),
+            preview_url: None,
+            not_found_on_youtube: false,
+        };
+
+        let path = render_relative_path(
+            "{artist}/{year} - {album}/{trackNumber} - {title}",
+            &track,
+            "mp3",
+            None,
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("Daft Punk/2001 - Discovery/01 - One More Time.mp3")
+        );
+    }
+
+    #[test]
+    fn test_spanish_token_aliases() {
+        let track = Track {
+            id: "2".into(),
+            title: "Thriller".into(),
+            artist: "Michael Jackson".into(),
+            album: "Thriller".into(),
+            year: "1982".into(),
+            track_number: 4,
+            total_tracks: 9,
+            duration: 357,
+            cover_url: "".into(),
+            preview_url: None,
+            not_found_on_youtube: false,
+        };
+
+        let path = render_relative_path(
+            "/{nombre Artista}/{año del album} - {nombre album}/{numero de pista} - {titulo de la pista}",
+            &track,
+            "flac",
+            None,
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("Michael Jackson/1982 - Thriller/04 - Thriller.flac")
+        );
+    }
+
+    #[test]
+    fn test_sanitizes_slashes_in_artist() {
+        let track = Track {
+            id: "3".into(),
+            title: "Back in Black".into(),
+            artist: "AC/DC".into(),
+            album: "Back in Black".into(),
+            year: "1980".into(),
+            track_number: 6,
+            total_tracks: 10,
+            duration: 255,
+            cover_url: "".into(),
+            preview_url: None,
+            not_found_on_youtube: false,
+        };
+
+        let path = render_relative_path(
+            "{artist}/{year} - {album}/{trackNumber} - {title}",
+            &track,
+            "mp3",
+            None,
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("AC_DC/1980 - Back in Black/06 - Back in Black.mp3")
+        );
+    }
+
+    #[test]
+    fn test_empty_year_cleanup() {
+        let track = Track {
+            id: "4".into(),
+            title: "Track Without Year".into(),
+            artist: "Artist".into(),
+            album: "Some Album".into(),
+            year: "".into(),
+            track_number: 2,
+            total_tracks: 10,
+            duration: 180,
+            cover_url: "".into(),
+            preview_url: None,
+            not_found_on_youtube: false,
+        };
+
+        let path = render_relative_path(
+            "{artist}/{year} - {album}/{trackNumber} - {title}",
+            &track,
+            "mp3",
+            None,
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("Artist/Some Album/02 - Track Without Year.mp3")
+        );
+    }
+}
+

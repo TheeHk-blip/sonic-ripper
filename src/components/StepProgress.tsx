@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'motion/react';
 import { Link2, Sliders, Download, Check } from 'lucide-react';
+import { useI18n } from '../lib/i18n';
 
 export type FlowStep = 'source' | 'configure' | 'results';
 
@@ -18,18 +19,20 @@ const BRAND = themeColor('--color-charcoal');
 const BRAND_ACTIVE_BG = themeColor('--color-olive');
 const BORDER_IDLE = themeColor('--color-cream');
 
-const STEPS: { key: FlowStep; label: string; icon: React.ReactNode }[] = [
-  { key: 'source', label: 'Add Source', icon: <Link2 className="size-5" /> },
-  { key: 'configure', label: 'Configure', icon: <Sliders className="size-5" /> },
-  { key: 'results', label: 'Download', icon: <Download className="size-5" /> },
-];
-
 export default function StepProgress({ current }: StepProgressProps) {
-  const currentIndex = STEPS.findIndex(s => s.key === current);
+  const { t } = useI18n();
+
+  const steps: { key: FlowStep; label: string; icon: React.ReactNode }[] = [
+    { key: 'source', label: t.stepSource, icon: <Link2 className="size-5" /> },
+    { key: 'configure', label: t.stepConfigure, icon: <Sliders className="size-5" /> },
+    { key: 'results', label: t.stepDownload, icon: <Download className="size-5" /> },
+  ];
+
+  const currentIndex = steps.findIndex(s => s.key === current);
 
   return (
     <div className="flex items-center w-full bg-olive/35 rounded-2xl px-3 py-2 mb-2 mt-5">
-      {STEPS.map((s, idx) => {
+      {steps.map((s, idx) => {
         const isDone = idx < currentIndex;
         const isActive = idx === currentIndex;
 
@@ -62,7 +65,7 @@ export default function StepProgress({ current }: StepProgressProps) {
               </div>
             </div>
 
-            {idx < STEPS.length - 1 && (
+            {idx < steps.length - 1 && (
               <div className="flex-1 h-px mx-3 sm:mx-4 relative overflow-hidden">
                 <motion.div
                   className="absolute inset-y-0 left-0 bg-olive"

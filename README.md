@@ -14,17 +14,19 @@
 
 ## Key Features
 
-| Feature                    | Description                                                                                                                                 |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Source Analysis**        | Paste Spotify or YouTube URLs to parse tracks/playlists. Detects playlist vs. single tracks automatically.                                  |
-| **Format & Quality**       | Choose from FLAC, MP3, M4A, WAV, OPUS, or MP4. Select bitrate (128k–320k or lossless). For video, choose resolution up to 1080p.            |
-| **ID3 Tagging**            | Embed metadata (title, artist, album, year, track number) and high-res album artwork directly into audio files.                             |
-| **Naming Patterns**        | Three patterns: `Artist - Title`, `01 - Artist - Title`, or `Title Only`.                                                                   |
-| **Download Folder**        | Save tracks directly to a chosen directory instead of ZIP. Supports batch downloading with concurrency.                                     |
-| **Bot Detection Bypass**   | Extract cookies from your browser profile (Chrome, Firefox, Safari, Edge, Brave, Opera, Vivaldi) or manually paste Netscape-format cookies. |
-| **Virtualized Track List** | Smooth scrolling with per-row height measurement for thousands of tracks.                                                                   |
-| **Built-in Media Player**  | Inline YouTube preview within the app.                                                                                                      |
-| **Cross-Platform**         | Packaged as AppImage (Linux), with Windows and macOS builds supported.                                                                      |
+| Feature                         | Description                                                                                                                                 |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Source Analysis**             | Paste Spotify or YouTube URLs to parse tracks/playlists. Detects playlist vs. single tracks automatically.                                  |
+| **Format & Quality**            | Choose from FLAC, MP3, M4A, WAV, OPUS, or MP4. Select bitrate (128k–320k or lossless). For video, choose resolution up to 1080p.            |
+| **Metadata & Cover Embedding**  | Embed metadata and high-res artwork into MP3 (ID3v2) and FLAC (Vorbis Picture Type 3 / Front Cover) for universal player compatibility.     |
+| **Custom Path & File Patterns** | Fully customizable folder hierarchies and filenames (`/{artist}/{year} - {album}/{trackNumber} - {title}`) with live preview and presets.   |
+| **Album Artwork Studio**        | Interactive dropzone with drag & drop, file picker, per-track artwork selection, On/Off series toggle, and instant `cover.jpg` saving.      |
+| **Multilingual UI (i18n)**      | English, Catalan, and Spanish (`[ ENG \| CAT \| ESP ]`) with automatic locale detection and instant switching.                              |
+| **Download Folder**             | Save tracks directly to a chosen directory instead of ZIP. Supports batch downloading with concurrency.                                     |
+| **Bot Detection Bypass**        | Extract cookies from your browser profile (Chrome, Firefox, Safari, Edge, Brave, Opera, Vivaldi) or manually paste Netscape-format cookies. |
+| **Virtualized Track List**      | Smooth scrolling with per-row height measurement for thousands of tracks.                                                                   |
+| **Built-in Media Player**       | Inline YouTube preview within the app.                                                                                                      |
+| **Cross-Platform**              | Packaged as AppImage (Linux), with Windows and macOS builds supported.                                                                      |
 
 ## Installation
 
@@ -68,13 +70,20 @@ Runs Vite in development mode with Tauri. App runs at `http://localhost:1420` by
 - **Bitrate/Quality** – For lossy formats: 128k–320k. For lossless: no bitrate setting.
 - **Sample Rate** – 44.1 kHz (CD Quality) or 48 kHz (Studio Quality), only for lossless formats.
 - **Video Quality** – If selecting MP4: choose from 360p to Max Resolution (best).
-- **Naming Pattern** – How filenames are structured.
-- **ID3 Tags** – Toggle embedding metadata and artwork.
+- **Path & Naming Pattern** – Choose from 4 balanced presets or customize folder hierarchies and filenames to your liking with token chips and live preview.
+- **ID3 & Metadata Tags** – Toggle embedding metadata and artwork. Injects Vorbis Picture Type 3 (Front Cover) for FLAC and ID3v2 APIC for MP3.
 - **Download Folder** – Choose a directory for direct folder saves (required for folder mode).
 - **Bot Bypass** – Select your browser profile or manually paste cookies.
+- **Language Switcher** – Click `[ ENG | CAT | ESP ]` in the top right to switch between English, Catalan, and Spanish instantly.
 
-### 3. Download
+### 3. Download & Artwork Studio
 
+- **Interactive Artwork Studio** – Located at the top of the download step:
+  - Drag and drop any image or click to open the file browser.
+  - Defaults to the official Spotify / YouTube artwork.
+  - Click any track in the list or use `<` / `>` to view and download that track's artwork as `cover.jpg`.
+  - Use the **"Embed in entire series" ON/OFF switch** to decide whether artwork changes apply to the entire collection or only to the active track.
+  - "Restore original" button to revert back to default artwork at any time.
 - **Save as ZIP** – Downloads all tracks as a single `.zip` archive with proper folder structure and metadata.
 - **Save to Folder** – Downloads tracks directly to your chosen download folder, one file per track.
 

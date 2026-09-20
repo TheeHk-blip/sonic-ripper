@@ -1,4 +1,5 @@
 import { ListMusic } from 'lucide-react';
+import { useI18n } from '../lib/i18n';
 
 interface TrackListHeaderProps {
   trackCount: number;
@@ -6,6 +7,8 @@ interface TrackListHeaderProps {
 }
 
 export default function TrackListHeader({ trackCount, playlistName }: TrackListHeaderProps) {
+  const { t } = useI18n();
+
   return (
     <div className="flex flex-col my-5">
       <div className="flex flex-row gap-2.5 mb-4 items-center">
@@ -15,11 +18,11 @@ export default function TrackListHeader({ trackCount, playlistName }: TrackListH
             {playlistName ? (
               playlistName
             ) : (
-              <span>{trackCount > 1 ? 'Discovered Tracks' : 'Discovered Track'}</span>
+              <span>{trackCount > 1 ? t.discoveredTracks : t.discoveredTrack}</span>
             )}
           </h3>
           <p className="text-xs">
-            {trackCount} {trackCount > 1 ? 'Songs' : 'Song'} parsed successfully
+            {trackCount > 1 ? t.songsParsed(trackCount) : t.songParsed(trackCount)}
           </p>
         </div>
       </div>

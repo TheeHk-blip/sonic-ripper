@@ -15,6 +15,9 @@ import {
 import SettingsPanel from './components/SettingsPanel';
 import MediaPlayer from './components/MediaPlayer';
 import StepProgress, { FlowStep } from './components/StepProgress';
+import LanguageSelector from './components/LanguageSelector';
+import AlbumCoverDropzone from './components/AlbumCoverDropzone';
+import { useI18n, Translations } from './lib/i18n';
 import { Track, DownloadSettings } from './types';
 import { listen } from '@tauri-apps/api/event';
 import {
@@ -29,38 +32,39 @@ import TrackRow from './components/TrackRow';
 import TrackListHeader from './components/TrackListHeader';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function friendlyError(err: any): string {
+function friendlyError(err: any, t: Translations): string {
   const code = err?.code as string | undefined;
   const raw = String(err?.message ?? err?.error ?? err ?? '');
 
   if (code === 'YOUTUBE_BOT_DETECTED') {
-    return 'YouTube blocked this as a bot check. Try turning on cookies (browser profile or pasted) in Settings, then retry.';
+    return t.errYoutubeBot;
   }
   if (code === 'TRACK_NOT_FOUND') {
-    return "Couldn't find a YouTube match for this track.";
+    return t.errTrackNotFound;
   }
   if (code === 'FORBIDDEN') {
-    return "You're not authenticated. Extract cookies or paste in settings";
+    return t.errForbidden;
   }
   if (raw.includes('No download folder is set')) {
-    return 'Choose a download folder in Settings before downloading.';
+    return t.errNoDownloadFolder;
   }
   if (raw.includes('Failed to parse Spotify URL') || raw.includes('SpotifyParseFailed')) {
-    return "That doesn't look like a valid link — double-check the URL.";
+    return t.errInvalidUrl;
   }
   if (raw.includes('Network error')) {
-    return 'Network error — check your connection and try again.';
+    return t.errNetwork;
   }
   if (raw.toLowerCase().includes('ffmpeg')) {
-    return 'Something went wrong converting or tagging this file.';
+    return t.errFfmpeg;
   }
   if (raw.toLowerCase().includes('yt-dlp')) {
-    return 'The downloader ran into an unexpected error fetching this track. Try again later';
+    return t.errYtDlp;
   }
-  return 'Something wrong happened. Try again';
+  return t.errGeneric;
 }
 
 export default function App() {
+  const { t } = useI18n();
   const [step, setStep] = useState<FlowStep>('source');
   const [sourceInput, setSourceInput] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -69,13 +73,15 @@ export default function App() {
   const [playlistName, setPlaylistName] = useState<string>('');
   const [isAlbum, setIsAlbum] = useState<boolean>(false);
   const [isPlaylist, setIsPlaylist] = useState(false);
+  const [selectedTrackIndex, setSelectedTrackIndex] = useState<number>(0);
+  const [applyCoverToAll, setApplyCoverToAll] = useState<boolean>(true);
   const [playingTrack, setPlayingTrack] = useState<Track | null>(null);
   const [settings, setSettings] = useState<DownloadSettings>({
     format: 'flac',
     bitrate: 'lossless',
     saveInFolder: true,
     skipMissingTracks: true,
-    namingPattern: 'number_artist_title',
+    namingPattern: '{artist}/{year} - {album}/{trackNumber} - {title}',
     embedId3Tags: true,
   });
   const [isBatchDownloading, setIsBatchDownloading] = useState(false);
@@ -116,6 +122,16 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    getSettings()
+      .then(s => {
+        if (s.namingPattern) {
+          setSettings(prev => ({ ...prev, namingPattern: s.namingPattern || prev.namingPattern }));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const handlePlayTrack = (track: Track) => {
     if (playingTrack?.id === track.id) {
       setPlayingTrack(null);
@@ -127,7 +143,7 @@ export default function App() {
   const handleAnalyze = async (e: React.SubmitEvent) => {
     e.preventDefault();
     if (!sourceInput) {
-      setError('Please paste a link or enter song search terms first.');
+      setError(t.searchEmptyError);
       return;
     }
 
@@ -136,6 +152,8 @@ export default function App() {
     setTracks([]);
     setPlaylistName('');
     setIsAlbum(false);
+    setSelectedTrackIndex(0);
+    setApplyCoverToAll(true);
 
     try {
       const data = await analyzeLink(sourceInput);
@@ -147,6 +165,7 @@ export default function App() {
         setTracks(
           data.tracks.map(t => ({
             ...t,
+            originalCoverUrl: t.coverUrl,
             status: 'idle',
             progress: 0,
           }))
@@ -156,6 +175,7 @@ export default function App() {
         setTracks([
           {
             ...data.track,
+            originalCoverUrl: data.track.coverUrl,
             status: 'idle',
             progress: 0,
           },
@@ -164,7 +184,7 @@ export default function App() {
       setStep('configure');
     } catch (err) {
       console.error(err);
-      setError(friendlyError(err) || 'Something went wrong. Please check your link and try again.');
+      setError(friendlyError(err, t) || t.errGeneric);
     } finally {
       setIsAnalyzing(false);
     }
@@ -187,7 +207,8 @@ export default function App() {
         cookiesFromBrowser: settings.cookiesFromBrowser,
         sampleRate: settings.sampleRate,
         videoQuality: settings.videoQuality,
-        namingPattern: settings.namingPattern || 'artist_title',
+        namingPattern:
+          settings.namingPattern || '{artist}/{year} - {album}/{trackNumber} - {title}',
         embedId3Tags: settings.embedId3Tags !== false,
       });
 
@@ -198,12 +219,12 @@ export default function App() {
       );
     } catch (err) {
       console.error(`Download failed for "${trackToDownload.title}":`, err);
-      const message = friendlyError(err);
+      const message = friendlyError(err, t);
       setTracks(prev =>
-        prev.map(t =>
-          t.id === trackToDownload.id
-            ? { ...t, status: 'failed', progress: 0, error: message || 'Failed to process track.' }
-            : t
+        prev.map(trk =>
+          trk.id === trackToDownload.id
+            ? { ...trk, status: 'failed', progress: 0, error: message || t.errGeneric }
+            : trk
         )
       );
     }
@@ -226,21 +247,22 @@ export default function App() {
       await downloadBatch(tracks, {
         format: settings.format,
         bitrate: settings.bitrate,
-        playlistName: playlistName || 'Playlist',
+        playlistName: playlistName || t.playlistDefault,
         youtubeCookies: settings.youtubeCookies,
         cookiesFromBrowser: settings.cookiesFromBrowser,
         sampleRate: settings.sampleRate,
         videoQuality: settings.videoQuality,
         skipMissingTracks: settings.skipMissingTracks,
-        namingPattern: settings.namingPattern || 'artist_title',
+        namingPattern:
+          settings.namingPattern || '{artist}/{year} - {album}/{trackNumber} - {title}',
         embedId3Tags: settings.embedId3Tags !== false,
       });
 
       setTracks(prev => prev.map(t => ({ ...t, status: 'completed', progress: 100 })));
     } catch (err) {
       console.error('Batch download failed:', err);
-      const message = friendlyError(err);
-      setError(`Batch download failed: ${message}`);
+      const message = friendlyError(err, t);
+      setError(`${t.batchFailed}: ${message}`);
       setTracks(prev => prev.map(t => ({ ...t, status: 'failed', progress: 0 })));
     } finally {
       setIsBatchDownloading(false);
@@ -257,7 +279,7 @@ export default function App() {
         if (!picked || !picked.downloadFolder) return;
       }
     } catch (err) {
-      setError('Could not read download settings: ' + (friendlyError(err) || 'unknown error.'));
+      setError(`${t.errFolderSettingsRead}: ${friendlyError(err, t) || t.errGeneric}`);
       return;
     }
 
@@ -267,9 +289,12 @@ export default function App() {
     const total = tracks.length;
     let completedCount = 0;
 
-    const collectionName = playlistName || tracks[0]?.album || 'Playlist';
+    const collectionName = playlistName || tracks[0]?.album || t.playlistDefault;
     const folderName =
       isAlbum && tracks[0]?.artist ? `${collectionName} - ${tracks[0].artist}` : collectionName;
+    const activePattern =
+      settings.namingPattern || '{artist}/{year} - {album}/{trackNumber} - {title}';
+    const hasCustomFolders = activePattern.includes('/') || activePattern.includes('\\');
     const FOLDER_DOWNLOAD_CONCURRENCY = 5;
 
     let nextIndex = 0;
@@ -293,9 +318,10 @@ export default function App() {
             cookiesFromBrowser: settings.cookiesFromBrowser,
             sampleRate: settings.sampleRate,
             videoQuality: settings.videoQuality,
-            namingPattern: settings.namingPattern || 'artist_title',
+            namingPattern: activePattern,
             embedId3Tags: settings.embedId3Tags !== false,
-            albumFolder: total > 1 ? folderName : undefined,
+            albumFolder: hasCustomFolders ? undefined : total > 1 ? folderName : undefined,
+            playlistName: playlistName || tracks[0]?.album,
           });
 
           completedCount++;
@@ -304,7 +330,7 @@ export default function App() {
           );
         } catch (err) {
           console.error(`Folder download error on track ${track.title}:`, err);
-          const message = friendlyError(err);
+          const message = friendlyError(err, t);
           setTracks(prev =>
             prev.map(t =>
               t.id === track.id ? { ...t, status: 'failed', progress: 0, error: message } : t
@@ -312,21 +338,19 @@ export default function App() {
           );
           if (!settings.skipMissingTracks) {
             stopRequested = true;
-            setError(`Folder download stopped: ${message}`);
+            setError(`${t.errFolderStopped}: ${message}`);
             return;
           }
         }
 
-        setFolderProgressText(`Downloaded ${completedCount}/${total} tracks…`);
+        setFolderProgressText(t.downloadedCount(completedCount, total));
       }
     };
 
     const workerCount = Math.min(FOLDER_DOWNLOAD_CONCURRENCY, total);
     await Promise.all(Array.from({ length: workerCount }, runNext));
 
-    setFolderProgressText(
-      `Saved ${completedCount} of ${total} tracks to your configured download folder.`
-    );
+    setFolderProgressText(t.savedToFolderText(completedCount, total));
     setTimeout(() => {
       setIsFolderDownloading(false);
       setFolderProgressText('');
@@ -334,14 +358,7 @@ export default function App() {
   };
 
   const [loadingPhraseIndex, setLoadingPhraseIndex] = useState(0);
-  const loadingPhrases = [
-    'Querying official registry database...',
-    'Matching stream frequencies with metadata...',
-    'Syncing high-fidelity 600x600px album art...',
-    'Injecting catalog tagging descriptors...',
-    'Finalizing raw audio buffers...',
-    'Hang tight, large playlists take a while',
-  ];
+  const loadingPhrases = t.loadingPhrases;
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
@@ -358,6 +375,8 @@ export default function App() {
     setTracks([]);
     setPlaylistName('');
     setIsAlbum(false);
+    setSelectedTrackIndex(0);
+    setApplyCoverToAll(true);
     setError(null);
   };
 
@@ -365,17 +384,64 @@ export default function App() {
 
   const goToResults = () => setStep('results');
 
+  const activeTrack = tracks[selectedTrackIndex] || tracks[0];
+  const isSelectedTrackCustom = activeTrack
+    ? activeTrack.coverUrl !== (activeTrack.originalCoverUrl || '')
+    : false;
+
+  const handleCoverChange = (newCover: string) => {
+    if (applyCoverToAll) {
+      setTracks(prev => prev.map(t => ({ ...t, coverUrl: newCover })));
+    } else {
+      setTracks(prev =>
+        prev.map((t, idx) => (idx === selectedTrackIndex ? { ...t, coverUrl: newCover } : t))
+      );
+    }
+  };
+
+  const handleResetCover = () => {
+    if (applyCoverToAll) {
+      setTracks(prev =>
+        prev.map(t => ({
+          ...t,
+          coverUrl: t.originalCoverUrl || t.coverUrl,
+        }))
+      );
+    } else {
+      setTracks(prev =>
+        prev.map((t, idx) =>
+          idx === selectedTrackIndex ? { ...t, coverUrl: t.originalCoverUrl || t.coverUrl } : t
+        )
+      );
+    }
+  };
+
+  const handlePrevTrack = () => {
+    if (tracks.length === 0) return;
+    setSelectedTrackIndex(prev => (prev > 0 ? prev - 1 : tracks.length - 1));
+  };
+
+  const handleNextTrack = () => {
+    if (tracks.length === 0) return;
+    setSelectedTrackIndex(prev => (prev < tracks.length - 1 ? prev + 1 : 0));
+  };
+
   return (
     <div className="flex min-h-screen w-full overflow-hidden p-2.5">
       <div className="flex flex-col justify-center h-full w-full relative z-10">
-        <header className="flex flex-col items-center md:items-start mb-3 px-2">
-          <div className="flex items-center gap-3">
-            <AudioLines className="w-8 h-8 text-rust animate-pulse" />
-            <h1 className="text-3xl text-olive sm:text-4xl uppercase">
-              SONIC<span className="">·</span>RIPPER
-            </h1>
+        <header className="flex flex-col sm:flex-row items-center justify-between mb-3 px-2">
+          <div className="flex flex-col items-center sm:items-start">
+            <div className="flex items-center gap-3">
+              <AudioLines className="w-8 h-8 text-rust animate-pulse" />
+              <h1 className="text-3xl text-olive sm:text-4xl uppercase">
+                SONIC<span className="">·</span>RIPPER
+              </h1>
+            </div>
+            <p className="tracking-wider text-xs uppercase mt-2">{t.subtitle}</p>
           </div>
-          <p className="tracking-wider text-xs uppercase mt-2">Audio & Video Extractor</p>
+          <div className="mt-3 sm:mt-0">
+            <LanguageSelector />
+          </div>
         </header>
 
         <StepProgress current={step} />
@@ -393,7 +459,7 @@ export default function App() {
               <section className="px-6 py-3 sm:px-8 sm:py-4 shadow-xl h-full my-auto relative">
                 <div className="flex items-center justify-between mb-5">
                   <span className="uppercase font-display text-rust font-bold flex items-center gap-2">
-                    <span className="w-1.5 h-1.5" /> Add a source
+                    <span className="w-1.5 h-1.5" /> {t.addSourceTitle}
                   </span>
                 </div>
 
@@ -411,7 +477,7 @@ export default function App() {
                           setSourceInput(e.target.value);
                           setError(null);
                         }}
-                        placeholder="Paste a link or search directly..."
+                        placeholder={t.searchPlaceholder}
                         className="flex-1 min-w-0 py-4 px-2 outline-none transition-all"
                         disabled={isAnalyzing || isBatchDownloading}
                       />
@@ -424,7 +490,7 @@ export default function App() {
                           }}
                           disabled={isAnalyzing || isBatchDownloading}
                           className="flex shrink-0 bg-rust/30 hover:rust/90 active:scale-102 w-10 md:w-12 px-2 transition-all duration-300 items-center cursor-pointer disabled:opacity-40"
-                          title="Clear"
+                          title={t.clearInput}
                         >
                           <X className="size-5" />
                         </button>
@@ -437,10 +503,13 @@ export default function App() {
                       className="sm:w-44 py-4 font-medium bg-olive/60 hover:bg-olive rounded-sm active:scale-98 transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                     >
                       {isAnalyzing ? (
-                        <RefreshCw className="size-5 animate-spin" />
+                        <span className="flex items-center gap-2">
+                          <RefreshCw className="size-5 animate-spin" />
+                          <span>{t.analyzingBtn}</span>
+                        </span>
                       ) : (
                         <>
-                          Search
+                          {t.searchBtn}
                           <ArrowRight className="w-3.5 h-3.5" />
                         </>
                       )}
@@ -486,7 +555,7 @@ export default function App() {
                         <Sparkles className="w-5 h-5 absolute inset-0 m-auto animate-pulse" />
                       </div>
                       <h3 className="font-display uppercase tracking-[0.25em] mb-2">
-                        Analyzing Catalog Metadata
+                        {t.analyzingCatalogTitle}
                       </h3>
                       <p className="h-5 transition-all duration-300">
                         {loadingPhrases[loadingPhraseIndex]}
@@ -510,7 +579,7 @@ export default function App() {
               <div className="space-y-6">
                 <section className="md:border-b md:border-olive">
                   <span className="font-display uppercase font-bold flex items-center gap-2 mb-5">
-                    <span className="w-1.5 h-1.5" /> Found and ready
+                    <span className="w-1.5 h-1.5" /> {t.foundAndReady}
                   </span>
 
                   {isPlaylist ? (
@@ -520,10 +589,12 @@ export default function App() {
                       </div>
                       <div className="min-w-0">
                         <p className="text-lg font-semibold text-cream truncate">
-                          {playlistName || 'Playlist'}
+                          {playlistName || t.playlistDefault}
                         </p>
                         <p className="text-[13px] mt-1">
-                          {tracks.length} tracks parsed successfully
+                          {tracks.length > 1
+                            ? t.songsParsed(tracks.length)
+                            : t.songParsed(tracks.length)}
                         </p>
                       </div>
                     </div>
@@ -550,7 +621,7 @@ export default function App() {
                       onClick={goToSource}
                       className="p-2 text-xs md:text-[13px] bg-olive rounded-md uppercase transition-colors cursor-pointer"
                     >
-                      ← Back
+                      {t.btnBack}
                     </button>
 
                     <button
@@ -558,7 +629,7 @@ export default function App() {
                       onClick={goToResults}
                       className="flex text-xs md:text-[13px] items-center gap-2.5 p-2 text-rust bg-charcoal hover:ring-2 hover:ring-rust rounded-md uppercase tracking-wide transition-all duration-300 cursor-pointer"
                     >
-                      <span>Continue to Download</span>
+                      <span>{t.btnContinueToDownload}</span>
                       <ArrowRight className="size-5" />
                     </button>
                   </div>
@@ -589,14 +660,14 @@ export default function App() {
                   onClick={goToConfigure}
                   className="text-xs bg-olive p-2 rounded-md uppercase tracking-[0.2em] transition-colors cursor-pointer"
                 >
-                  ← Back
+                  {t.btnBack}
                 </button>
                 <button
                   type="button"
                   onClick={goToSource}
                   className="text-xs p-2 bg-rust rounded-md uppercase tracking-[0.2em] transition-colors cursor-pointer"
                 >
-                  Start over
+                  {t.btnStartOver}
                 </button>
               </div>
 
@@ -606,6 +677,23 @@ export default function App() {
                 id="results-section"
                 className="mt-5"
               >
+                {/* Album Cover Dropzone Window */}
+                <AlbumCoverDropzone
+                  currentCover={activeTrack?.coverUrl}
+                  isCustom={isSelectedTrackCustom}
+                  onCoverChange={handleCoverChange}
+                  onResetCover={handleResetCover}
+                  disabled={isBatchDownloading || isFolderDownloading}
+                  trackTitle={activeTrack?.title}
+                  trackArtist={activeTrack?.artist}
+                  selectedTrackIndex={selectedTrackIndex}
+                  totalTracks={tracks.length}
+                  applyToAll={applyCoverToAll}
+                  onToggleApplyToAll={setApplyCoverToAll}
+                  onPrevTrack={handlePrevTrack}
+                  onNextTrack={handleNextTrack}
+                />
+
                 {/* Playlist Batch header */}
                 {isPlaylist && (
                   <div
@@ -613,10 +701,9 @@ export default function App() {
                     className="rounded-none flex flex-col md:flex-row md:items-center md:justify-between gap-4"
                   >
                     <div className="text-left md:items-start">
-                      <h4 className="text uppercase tracking-[0.3em]">Batch Download Options</h4>
+                      <h4 className="text uppercase tracking-[0.3em]">{t.batchOptionsTitle}</h4>
                       <p className="text-[11px] md:text-sm text-rust mt-1">
-                        Export all {tracks.length} tracks with embedded ID3 tags, artwork, and your
-                        custom naming pattern.
+                        {t.batchOptionsDesc(tracks.length)}
                       </p>
                     </div>
 
@@ -627,14 +714,14 @@ export default function App() {
                         onClick={handleDownloadToFolder}
                         disabled={isBatchDownloading || isFolderDownloading}
                         className="px-4 py-3 border-2 border-gold rounded-md text-xs uppercase tracking-[0.15em] transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
-                        title="Select a directory on your machine to save all tagged audio files directly into that folder"
+                        title={t.saveToFolderTitle}
                       >
                         {isFolderDownloading ? (
                           <RefreshCw className="size-3 animate-spin" />
                         ) : (
                           <FolderPlus className="size-4 text-gold" />
                         )}
-                        <span>Save to Folder</span>
+                        <span>{t.btnSaveToFolder}</span>
                       </button>
 
                       {/* Download as ZIP button */}
@@ -643,14 +730,14 @@ export default function App() {
                         onClick={handleDownloadAll}
                         disabled={isBatchDownloading || isFolderDownloading}
                         className="px-4 py-3 border-2 border-rust text-xs rounded-md uppercase tracking-[0.2em] transition-colors duration-300 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
-                        title="Download a single .ZIP archive containing all tagged tracks and folders"
+                        title={t.saveAsZipTitle}
                       >
                         {isBatchDownloading ? (
                           <RefreshCw className="size-3 animate-spin" />
                         ) : (
                           <Archive className="size-4 text-rust" />
                         )}
-                        <span>Save as ZIP</span>
+                        <span>{t.btnSaveAsZip}</span>
                       </button>
                     </div>
                   </div>
@@ -662,7 +749,7 @@ export default function App() {
                     <div className="flex items-center justify-between text-xs font-bold tracking-widest text-brand uppercase my-0.5">
                       <span className="flex items-center text-charcoal gap-2">
                         <FolderCheck className="size-5 animate-pulse" />
-                        Saving directly into your selected folder...
+                        {t.savingDirectlyToFolder}
                       </span>
                     </div>
                     <p className="text-xs text-gold">{folderProgressText}</p>
@@ -675,7 +762,7 @@ export default function App() {
                     <div className="flex items-center justify-between text-[10px] font-mono font-bold tracking-widest text-brand uppercase mb-2">
                       <span className="flex items-center gap-1.5">
                         <RefreshCw className="w-3.5 h-3.5 text-brand animate-spin" />
-                        Transcoding, tagging, and archiving tracks into ZIP...
+                        {t.batchArchivingProgress}
                       </span>
                       <span>{batchProgress}%</span>
                     </div>
@@ -688,8 +775,7 @@ export default function App() {
                       />
                     </div>
                     <p className="text-[9px] mt-2 uppercase tracking-wide">
-                      Tracks are tagged with ID3 v2.3 metadata, covers, and organized inside your
-                      archive.
+                      {t.batchArchivingSubtext}
                     </p>
                   </div>
                 )}
@@ -711,6 +797,8 @@ export default function App() {
                           activeTrackId={playingTrack?.id}
                           isBatchDownloading={isBatchDownloading}
                           isFolderDownloading={isFolderDownloading}
+                          isSelected={index === selectedTrackIndex}
+                          onSelectTrack={setSelectedTrackIndex}
                         />
                       </div>
                     );

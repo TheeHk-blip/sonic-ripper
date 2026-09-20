@@ -10,6 +10,8 @@ use crate::error::{AppError, AppResult};
 pub struct AppSettings {
     #[serde(default)]
     pub download_folder: Option<String>,
+    #[serde(default)]
+    pub naming_pattern: Option<String>,
 }
 
 fn settings_path(app: &AppHandle) -> AppResult<PathBuf> {
@@ -70,3 +72,12 @@ pub async fn set_download_folder(app: AppHandle, folder: String) -> AppResult<Ap
     save_settings(&app, &settings).await?;
     Ok(settings)
 }
+
+#[tauri::command]
+pub async fn set_naming_pattern(app: AppHandle, pattern: String) -> AppResult<AppSettings> {
+    let mut settings = load_settings(&app).await?;
+    settings.naming_pattern = Some(pattern);
+    save_settings(&app, &settings).await?;
+    Ok(settings)
+}
+

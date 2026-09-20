@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { motion } from 'motion/react';
 import { X, Tv, ChevronUp, ChevronDown } from 'lucide-react';
 import { Track } from '../types';
+import { useI18n } from '../lib/i18n';
 
 interface MediaPlayerProps {
   track: Track | null;
@@ -17,6 +18,7 @@ function extractYouTubeId(url: string | null | undefined): string | null {
 }
 
 export default function MediaPlayer({ track, onClose }: MediaPlayerProps) {
+  const { t } = useI18n();
   const [isVideoExpanded, setIsVideoExpanded] = useState(true);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -91,7 +93,7 @@ export default function MediaPlayer({ track, onClose }: MediaPlayerProps) {
               </span>
               <span className="text-xs text-gold block truncate italic mt-0.5">{track.artist}</span>
               <span className="text-[9px] tracking-widest font-mono uppercase mt-1 block">
-                YouTube Stream
+                {t.youtubeStream}
               </span>
             </div>
           </div>
@@ -104,7 +106,8 @@ export default function MediaPlayer({ track, onClose }: MediaPlayerProps) {
               <button
                 type="button"
                 onClick={() => setIsVideoExpanded(!isVideoExpanded)}
-                className="text-white/60 hover:text-brand transition-colors"
+                className="text-white/60 hover:text-brand transition-colors cursor-pointer"
+                title={isVideoExpanded ? t.collapseVideo : t.expandVideo}
               >
                 {isVideoExpanded ? (
                   <ChevronDown className="size-5 text-rust" />
@@ -118,7 +121,7 @@ export default function MediaPlayer({ track, onClose }: MediaPlayerProps) {
               type="button"
               onClick={handleClose}
               className="p-1 rounded-none hover:bg-white/10 hover:text-brand transition-all border border-transparent hover:border-white/10 cursor-pointer"
-              title="Close Preview"
+              title={t.closePlayer}
             >
               <X className="size-5" />
             </button>

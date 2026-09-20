@@ -1,6 +1,58 @@
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { Track } from '../types';
+
+export async function saveCoverImage(
+  coverUrl: string,
+  defaultName = 'cover.jpg'
+): Promise<boolean> {
+  // If running inside Tauri desktop app
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    try {
+      const selected = await save({
+        defaultPath: defaultName,
+        filters: [
+          { name: 'JPEG Image', extensions: ['jpg', 'jpeg'] },
+          { name: 'All Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] },
+        ],
+      });
+
+      if (!selected) return false;
+
+      await invoke('save_cover_file', {
+        coverUrl,
+        targetPath: selected,
+      });
+      return true;
+    } catch (err) {
+      console.warn('Tauri save dialog failed, falling back to browser download:', err);
+    }
+  }
+
+  // Fallback for web browser download
+  try {
+    const res = await fetch(coverUrl);
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = defaultName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    return true;
+  } catch {
+    const a = document.createElement('a');
+    a.href = coverUrl;
+    a.download = defaultName;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    return true;
+  }
+}
 
 export interface ApiError {
   error: string;
@@ -36,6 +88,7 @@ export async function analyzeSpotify(url: string): Promise<AnalyzeResponse> {
 
 export interface AppSettings {
   downloadFolder: string | null;
+  namingPattern?: string | null;
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -49,6 +102,14 @@ export async function getSettings(): Promise<AppSettings> {
 export async function setDownloadFolder(folder: string): Promise<AppSettings> {
   try {
     return await invoke<AppSettings>('set_download_folder', { folder });
+  } catch (err) {
+    throw toError(err);
+  }
+}
+
+export async function setNamingPattern(pattern: string): Promise<AppSettings> {
+  try {
+    return await invoke<AppSettings>('set_naming_pattern', { pattern });
   } catch (err) {
     throw toError(err);
   }
@@ -70,6 +131,7 @@ export interface DownloadOptions {
   namingPattern: string;
   embedId3Tags: boolean;
   albumFolder?: string;
+  playlistName?: string;
 }
 
 export async function downloadTrack(track: Track, opts: DownloadOptions): Promise<string> {
