@@ -1,5 +1,6 @@
 mod download;
 mod error;
+mod lyrics;
 mod models;
 mod settings;
 mod spotify;

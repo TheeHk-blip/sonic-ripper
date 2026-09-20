@@ -130,6 +130,7 @@ export interface DownloadOptions {
   videoQuality?: string;
   namingPattern: string;
   embedId3Tags: boolean;
+  downloadLyrics?: boolean;
   albumFolder?: string;
   playlistName?: string;
 }

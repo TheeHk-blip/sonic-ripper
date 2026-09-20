@@ -70,12 +70,14 @@ export interface Translations {
   chipPlaylist: string;
   chipSlash: string;
 
-  // Download Folder
+  // Download Folder & Lyrics
   downloadFolderTitle: string;
   noFolderSet: string;
   loadingFolder: string;
   btnChange: string;
   btnChoose: string;
+  downloadLyricsTitle: string;
+  downloadLyricsDesc: string;
 
   // ID3 Tags & Skip
   embedId3Title: string;
@@ -250,6 +252,9 @@ const es: Translations = {
   loadingFolder: 'Cargando…',
   btnChange: 'Cambiar',
   btnChoose: 'Elegir',
+  downloadLyricsTitle: 'Descargar Letras (.txt)',
+  downloadLyricsDesc:
+    'Guarda automáticamente un archivo .txt con la letra en la misma carpeta que la canción si está disponible.',
 
   embedId3Title: 'Incrustar Etiquetas ID3 y Portada',
   embedId3Desc:
@@ -424,6 +429,9 @@ const ca: Translations = {
   loadingFolder: 'Carregant…',
   btnChange: 'Canviar',
   btnChoose: 'Triar',
+  downloadLyricsTitle: 'Descarregar Lletres (.txt)',
+  downloadLyricsDesc:
+    'Desa automàticament un fitxer .txt amb la lletra a la mateixa carpeta que la cançó si està disponible.',
 
   embedId3Title: 'Incrustar Etiquetes ID3 i Portada',
   embedId3Desc:
@@ -598,6 +606,9 @@ const en: Translations = {
   loadingFolder: 'Loading…',
   btnChange: 'Change',
   btnChoose: 'Choose',
+  downloadLyricsTitle: 'Download Lyrics (.txt)',
+  downloadLyricsDesc:
+    'Automatically saves a .txt file with lyrics in the same folder as the song if available.',
 
   embedId3Title: 'Embed ID3 Tags & Artwork',
   embedId3Desc:

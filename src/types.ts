@@ -35,4 +35,5 @@ export interface DownloadSettings {
   skipMissingTracks?: boolean;
   namingPattern?: string;
   embedId3Tags?: boolean;
+  downloadLyrics?: boolean;
 }

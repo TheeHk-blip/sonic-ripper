@@ -42,6 +42,7 @@ pub struct DownloadOptions {
     pub video_quality: Option<String>,
     pub naming_pattern: String,
     pub embed_id3_tags: bool,
+    pub download_lyrics: bool,
     pub playlist_name: Option<String>,
 }
 
@@ -349,13 +350,13 @@ async fn run_yt_dlp_streaming(
 }
 
 #[derive(Clone, Copy)]
-struct CookieAuth<'a> {
-    cookies_path: Option<&'a str>,
-    cookies_from_browser: Option<&'a str>,
+pub struct CookieAuth<'a> {
+    pub cookies_path: Option<&'a str>,
+    pub cookies_from_browser: Option<&'a str>,
 }
 
 impl CookieAuth<'_> {
-    fn append_to(&self, args: &mut Vec<String>) {
+    pub fn append_to(&self, args: &mut Vec<String>) {
         if let Some(path) = self.cookies_path {
             args.push("--cookies".into());
             args.push(path.to_string());
@@ -1038,6 +1039,29 @@ async fn run_audio_pipeline(
     .await?;
     run_ffmpeg(app, &args).await?;
 
+    if opts.download_lyrics {
+        let auth = CookieAuth {
+            cookies_path: cookies_file_path,
+            cookies_from_browser: opts.cookies_from_browser.as_deref(),
+        };
+        if let Some(lyrics) =
+            crate::lyrics::fetch_track_lyrics(app, track, Some(preview_url), work_dir, auth).await
+        {
+            let lyrics_path = out_path.with_extension("txt");
+            if let Err(e) = fs::write(&lyrics_path, lyrics.as_bytes()).await {
+                eprintln!(
+                    "[Lyrics] Failed to write lyrics to {}: {e}",
+                    lyrics_path.display()
+                );
+            } else {
+                eprintln!(
+                    "[Lyrics] Successfully saved lyrics to {}",
+                    lyrics_path.display()
+                );
+            }
+        }
+    }
+
     Ok(out_path)
 }
 
@@ -1089,6 +1113,29 @@ async fn run_video_pipeline(
     let args = build_ffmpeg_video_args(&video_path, &out_path, track, opts);
     run_ffmpeg(app, &args).await?;
 
+    if opts.download_lyrics {
+        let auth = CookieAuth {
+            cookies_path: cookies_file_path,
+            cookies_from_browser: opts.cookies_from_browser.as_deref(),
+        };
+        if let Some(lyrics) =
+            crate::lyrics::fetch_track_lyrics(app, track, Some(preview_url), work_dir, auth).await
+        {
+            let lyrics_path = out_path.with_extension("txt");
+            if let Err(e) = fs::write(&lyrics_path, lyrics.as_bytes()).await {
+                eprintln!(
+                    "[Lyrics] Failed to write lyrics to {}: {e}",
+                    lyrics_path.display()
+                );
+            } else {
+                eprintln!(
+                    "[Lyrics] Successfully saved lyrics to {}",
+                    lyrics_path.display()
+                );
+            }
+        }
+    }
+
     Ok(out_path)
 }
 
@@ -1131,6 +1178,8 @@ pub struct DownloadTrackArgs {
     pub naming_pattern: String,
     pub embed_id3_tags: bool,
     #[serde(default)]
+    pub download_lyrics: Option<bool>,
+    #[serde(default)]
     pub album_folder: Option<String>,
     #[serde(default)]
     pub playlist_name: Option<String>,
@@ -1147,6 +1196,7 @@ impl DownloadTrackArgs {
             video_quality: self.video_quality,
             naming_pattern: self.naming_pattern,
             embed_id3_tags: self.embed_id3_tags,
+            download_lyrics: self.download_lyrics.unwrap_or(true),
             playlist_name: self.playlist_name,
         }
     }
@@ -1169,6 +1219,8 @@ pub struct DownloadBatchArgs {
     pub skip_missing_tracks: bool,
     pub naming_pattern: String,
     pub embed_id3_tags: bool,
+    #[serde(default)]
+    pub download_lyrics: Option<bool>,
 }
 
 #[tauri::command]
@@ -1194,6 +1246,7 @@ pub async fn download_batch(
         video_quality: args.video_quality.clone(),
         naming_pattern: args.naming_pattern.clone(),
         embed_id3_tags: args.embed_id3_tags,
+        download_lyrics: args.download_lyrics.unwrap_or(true),
         playlist_name: Some(args.playlist_name.clone()),
     });
 
@@ -1328,6 +1381,28 @@ fn write_zip(base_dir: &Path, files: &[PathBuf], zip_path: &Path) -> AppResult<(
         writer
             .write_all(&bytes)
             .map_err(|e| AppError::Other(format!("zip write error: {e}")))?;
+
+        // If lyrics file was generated alongside the audio/video file, include it in the zip too
+        let lyrics_file = path.with_extension("txt");
+        if lyrics_file.exists() && lyrics_file.is_file() {
+            let lyrics_rel = lyrics_file
+                .strip_prefix(base_dir)
+                .ok()
+                .and_then(|p| p.to_str())
+                .map(|s| s.replace('\\', "/"))
+                .unwrap_or_else(|| {
+                    lyrics_file
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("track.txt")
+                        .to_string()
+                });
+            if let Ok(lyrics_bytes) = std::fs::read(&lyrics_file) {
+                if writer.start_file(lyrics_rel, options).is_ok() {
+                    let _ = writer.write_all(&lyrics_bytes);
+                }
+            }
+        }
     }
     writer
         .finish()
