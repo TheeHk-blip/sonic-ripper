@@ -178,6 +178,19 @@ export interface Translations {
   coverDropzoneMinimize: string;
   coverDropzoneExpand: string;
   coverDropzonePaletteLabel: string;
+  coverSearchOnlineTitle: string;
+  coverSearchOnlineBtn: string;
+  coverSearchPlaceholder: string;
+  coverSearchBtn: string;
+  coverSearching: string;
+  coverSearchNoResults: string;
+  coverSearchSelectPrompt: string;
+  coverSearchClose: string;
+  coverSearchGoogleBtn: string;
+  coverSearchGoogleTip: string;
+  coverSearchWebBtn: string;
+  coverSearchingWeb: string;
+  coverSearchOpenBrowser: string;
 }
 
 const es: Translations = {
@@ -354,6 +367,19 @@ const es: Translations = {
   coverDropzoneMinimize: 'Minimizar carátula',
   coverDropzoneExpand: 'Estudio de carátula',
   coverDropzonePaletteLabel: 'Paleta de color',
+  coverSearchOnlineTitle: 'Buscar carátulas online',
+  coverSearchOnlineBtn: 'Buscar online',
+  coverSearchPlaceholder: 'Escribe artista, álbum o canción...',
+  coverSearchBtn: 'Buscar',
+  coverSearching: 'Buscando carátulas...',
+  coverSearchNoResults: 'No se han encontrado carátulas para esta búsqueda',
+  coverSearchSelectPrompt: 'Haz clic en una carátula para aplicarla',
+  coverSearchClose: 'Cerrar buscador',
+  coverSearchGoogleBtn: 'Buscar en Google Imágenes',
+  coverSearchGoogleTip: 'Arrastra cualquier imagen desde el navegador directamente a esta ventana.',
+  coverSearchWebBtn: 'Buscar más en la Web (Google / Bing)',
+  coverSearchingWeb: 'Buscando en la web...',
+  coverSearchOpenBrowser: 'Abrir en Google Imágenes (navegador)',
 };
 
 const ca: Translations = {
@@ -532,6 +558,20 @@ const ca: Translations = {
   coverDropzoneMinimize: 'Minimitzar caràtula',
   coverDropzoneExpand: 'Estudi de caràtula',
   coverDropzonePaletteLabel: 'Paleta de color',
+  coverSearchOnlineTitle: 'Cercar caràtules online',
+  coverSearchOnlineBtn: 'Cercar online',
+  coverSearchPlaceholder: 'Escriu artista, àlbum o cançó...',
+  coverSearchBtn: 'Cercar',
+  coverSearching: 'Cercant caràtules...',
+  coverSearchNoResults: "No s'han trobat caràtules per a aquesta cerca",
+  coverSearchSelectPrompt: 'Fes clic en una caràtula per aplicar-la',
+  coverSearchClose: 'Tancar cercador',
+  coverSearchGoogleBtn: 'Cercar a Google Imatges',
+  coverSearchGoogleTip:
+    'Consell: Pots arrossegar qualsevol imatge des del navegador directament a aquesta finestra.',
+  coverSearchWebBtn: 'Cercar més a la Web (Google / Bing)',
+  coverSearchingWeb: 'Cercant a la web...',
+  coverSearchOpenBrowser: 'Obrir a Google Imatges (navegador)',
 };
 
 const en: Translations = {
@@ -707,6 +747,19 @@ const en: Translations = {
   coverDropzoneMinimize: 'Minimize cover',
   coverDropzoneExpand: 'Cover studio',
   coverDropzonePaletteLabel: 'Color palette',
+  coverSearchOnlineTitle: 'Search covers online',
+  coverSearchOnlineBtn: 'Search online',
+  coverSearchPlaceholder: 'Enter artist, album or track name...',
+  coverSearchBtn: 'Search',
+  coverSearching: 'Searching covers...',
+  coverSearchNoResults: 'No covers found for this query',
+  coverSearchSelectPrompt: 'Click a cover to apply it',
+  coverSearchClose: 'Close search',
+  coverSearchGoogleBtn: 'Search on Google Images',
+  coverSearchGoogleTip: 'Tip: You can drag any image from your browser directly into this window.',
+  coverSearchWebBtn: 'Search more on Web (Google / Bing)',
+  coverSearchingWeb: 'Searching the web...',
+  coverSearchOpenBrowser: 'Open in Google Images (browser)',
 };
 
 const dictionaries: Record<Language, Translations> = { es, ca, en };

@@ -11,9 +11,13 @@ import {
   ChevronDown,
   ChevronUp,
   Activity,
+  Search,
+  X,
+  ExternalLink,
+  Globe,
 } from 'lucide-react';
 import { useI18n } from '../lib/i18n';
-import { saveCoverImage } from '../lib/api';
+import { saveCoverImage, searchOnlineCovers, openExternalUrl, OnlineCoverResult } from '../lib/api';
 
 export interface SpectrogramPalette {
   id: string;
@@ -176,6 +180,94 @@ export default function AlbumCoverDropzone({
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [isGeneratingSpectrogram, setIsGeneratingSpectrogram] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Online Cover Search state
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<OnlineCoverResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [appliedCoverUrl, setAppliedCoverUrl] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const executeSearch = async (queryText?: string) => {
+    const q = (queryText !== undefined ? queryText : searchQuery).trim();
+    if (!q) return;
+
+    setIsSearching(true);
+    setSearchError(null);
+    setHasSearched(true);
+
+    try {
+      const results = await searchOnlineCovers(q);
+      setSearchResults(results.slice(0, 12));
+    } catch (err) {
+      console.error('Failed to search online covers:', err);
+      setSearchError(String(err));
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const [isSearchingWeb, setIsSearchingWeb] = useState(false);
+
+  const handleSearchWeb = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const q = searchQuery.trim() || [trackArtist, trackTitle].filter(Boolean).join(' ');
+    if (!q) return;
+
+    setIsSearchingWeb(true);
+    setSearchError(null);
+
+    try {
+      const webResults = await searchOnlineCovers(q, 'web');
+      setSearchResults(webResults.slice(0, 12));
+    } catch (err) {
+      console.error('Failed to search web covers:', err);
+      setSearchError(String(err));
+    } finally {
+      setIsSearchingWeb(false);
+    }
+  };
+
+  const handleToggleSearch = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nextState = !isSearchOpen;
+    setIsSearchOpen(nextState);
+
+    if (nextState) {
+      // Reverted to artist + title as before
+      const defaultQuery = [trackArtist, trackTitle].filter(Boolean).join(' ');
+      if (!searchQuery.trim() && defaultQuery) {
+        setSearchQuery(defaultQuery);
+        executeSearch(defaultQuery);
+      } else if (searchQuery.trim() && searchResults.length === 0) {
+        executeSearch(searchQuery);
+      }
+      setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 100);
+    }
+  };
+
+  const handleSearchGoogle = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const term = searchQuery.trim() || [trackArtist, trackTitle].filter(Boolean).join(' ');
+    const googleUrl = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(
+      term ? `${term} album cover` : 'album cover'
+    )}`;
+    openExternalUrl(googleUrl);
+  };
+
+  const handleSelectCover = (e: React.MouseEvent, cover: OnlineCoverResult) => {
+    e.stopPropagation();
+    onCoverChange(cover.coverUrl);
+    setAppliedCoverUrl(cover.coverUrl);
+    setTimeout(() => {
+      setAppliedCoverUrl(null);
+    }, 2500);
+  };
 
   const handleSpectrogramClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -463,6 +555,21 @@ export default function AlbumCoverDropzone({
               <span>{t.coverDropzoneChangeBtn}</span>
             </button>
 
+            {/* Round Online Search Button with Magnifying Glass */}
+            <button
+              type="button"
+              onClick={handleToggleSearch}
+              className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center border transition-all cursor-pointer shrink-0 shadow-sm ${
+                isSearchOpen
+                  ? 'bg-gold text-charcoal border-gold shadow-gold/30 scale-105'
+                  : 'bg-charcoal/90 hover:bg-olive/40 text-gold border-gold/50 hover:border-gold hover:scale-105'
+              }`}
+              title={t.coverSearchOnlineTitle}
+              aria-label={t.coverSearchOnlineTitle}
+            >
+              <Search className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
+            </button>
+
             {/* Download cover button */}
             {currentCover && (
               <button
@@ -594,6 +701,197 @@ export default function AlbumCoverDropzone({
               </button>
             )}
           </div>
+
+          {/* Online Cover Search Drawer */}
+          {isSearchOpen && (
+            <div
+              onClick={e => e.stopPropagation()}
+              className="mt-3 p-3 rounded-lg bg-black/40 border border-gold/40 shadow-inner flex flex-col gap-2.5 transition-all duration-200 text-left"
+            >
+              {/* Search Bar */}
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1 flex items-center min-w-0">
+                  <Search className="w-3.5 h-3.5 text-cream/40 absolute left-2.5 pointer-events-none" />
+                  <input
+                    ref={searchInputRef}
+                    type="text"
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        executeSearch();
+                      }
+                    }}
+                    placeholder={t.coverSearchPlaceholder}
+                    className="w-full pl-8 pr-7 py-1.5 text-xs rounded bg-charcoal border border-olive/50 text-cream placeholder-cream/40 focus:outline-none focus:border-gold transition-colors"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery('');
+                        searchInputRef.current?.focus();
+                      }}
+                      className="absolute right-2 text-cream/40 hover:text-cream transition-colors p-0.5 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => executeSearch()}
+                  disabled={isSearching || !searchQuery.trim()}
+                  className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded bg-olive/70 hover:bg-olive text-cream border border-olive transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                >
+                  {isSearching ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-gold" />
+                  ) : (
+                    <Search className="w-3.5 h-3.5 text-gold" />
+                  )}
+                  <span>{isSearching ? t.coverSearching : t.coverSearchBtn}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsSearchOpen(false)}
+                  className="p-1 rounded hover:bg-charcoal text-cream/50 hover:text-rust transition-colors cursor-pointer shrink-0"
+                  title={t.coverSearchClose}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Status / Results */}
+              {isSearching ? (
+                <div className="py-6 flex flex-col items-center justify-center gap-2 text-gold">
+                  <RefreshCw className="w-5 h-5 animate-spin text-gold" />
+                  <span className="text-[11px] font-mono tracking-wider">{t.coverSearching}</span>
+                </div>
+              ) : searchError ? (
+                <div className="py-2.5 px-3 rounded bg-rust/15 border border-rust/30 text-rust text-xs">
+                  {searchError}
+                </div>
+              ) : searchResults.length > 0 ? (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between text-[10px] uppercase font-mono tracking-wider text-cream/60 px-0.5">
+                    <span>{t.coverSearchSelectPrompt}</span>
+                    <span className="text-gold/80">
+                      {Math.min(searchResults.length, 12)} resultados
+                    </span>
+                  </div>
+
+                  {/* Grid of Results (Compact Cards) */}
+                  <div
+                    className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 max-h-56 overflow-y-auto p-1"
+                    style={{
+                      scrollbarWidth: 'thin',
+                      scrollbarColor: 'var(--color-gold) transparent',
+                    }}
+                  >
+                    {searchResults.slice(0, 12).map(result => {
+                      const isSelected =
+                        currentCover === result.coverUrl || appliedCoverUrl === result.coverUrl;
+                      return (
+                        <div
+                          key={result.id}
+                          onClick={e => handleSelectCover(e, result)}
+                          className={`group relative rounded-md overflow-hidden border cursor-pointer transition-all duration-200 hover:scale-[1.03] bg-black/50 flex flex-col ${
+                            isSelected
+                              ? 'border-gold ring-2 ring-gold/60 shadow-md shadow-gold/20'
+                              : 'border-olive/40 hover:border-gold/80'
+                          }`}
+                        >
+                          <div className="aspect-square w-full relative overflow-hidden bg-black/20">
+                            <img
+                              src={result.thumbnailUrl}
+                              alt={result.album || result.title}
+                              referrerPolicy="no-referrer"
+                              loading="lazy"
+                              className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+                            />
+
+                            {/* Resolution badge */}
+                            <span className="absolute bottom-1 right-1 px-1 py-0.2 rounded text-[8px] font-mono font-bold bg-black/75 text-cream/90 border border-white/20">
+                              HD
+                            </span>
+
+                            {/* Source badge */}
+                            <span className="absolute top-1 left-1 px-1 py-0.2 rounded text-[8px] font-semibold uppercase bg-charcoal/85 text-gold/90 border border-gold/30">
+                              {result.source}
+                            </span>
+
+                            {/* Selected overlay */}
+                            {isSelected && (
+                              <div className="absolute inset-0 bg-gold/30 backdrop-blur-[1px] flex items-center justify-center">
+                                <div className="w-5 h-5 rounded-full bg-gold text-charcoal flex items-center justify-center shadow-lg">
+                                  <Check className="w-3.5 h-3.5 stroke-[3]" />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="p-1 text-[10px] leading-tight flex flex-col min-w-0 bg-charcoal/90">
+                            <span
+                              className="font-semibold text-cream truncate"
+                              title={result.album || result.title}
+                            >
+                              {result.album || result.title}
+                            </span>
+                            <span className="text-cream/60 truncate" title={result.artist}>
+                              {result.artist}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : hasSearched ? (
+                <div className="py-4 text-center text-xs text-cream/50 italic">
+                  {t.coverSearchNoResults}
+                </div>
+              ) : null}
+
+              {/* Buscar más en la Web (integrado directamente dentro de la app) */}
+              {hasSearched && !isSearching && (
+                <div className="flex flex-col items-center gap-2 pt-2.5 pb-0.5 border-t border-olive/30 mt-1">
+                  <div className="flex items-center gap-2 flex-wrap justify-center">
+                    <button
+                      type="button"
+                      onClick={handleSearchWeb}
+                      disabled={isSearchingWeb}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md bg-charcoal/95 hover:bg-olive/40 text-gold border border-gold/50 hover:border-gold transition-all cursor-pointer shadow-sm disabled:opacity-50"
+                      title={t.coverSearchWebBtn}
+                    >
+                      {isSearchingWeb ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-gold" />
+                      ) : (
+                        <Globe className="w-3.5 h-3.5 text-gold" />
+                      )}
+                      <span>{isSearchingWeb ? t.coverSearchingWeb : t.coverSearchWebBtn}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleSearchGoogle}
+                      className="flex items-center gap-1 text-[10px] text-cream/50 hover:text-gold transition-colors py-1 px-2 rounded hover:bg-charcoal cursor-pointer"
+                      title={t.coverSearchOpenBrowser}
+                    >
+                      <span>{t.coverSearchOpenBrowser}</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                  </div>
+
+                  <span className="text-[10px] text-cream/50 italic text-center">
+                    {t.coverSearchGoogleTip}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* On/Off Switch: Apply to entire series vs. only selected track */}
           {hasMultipleTracks && onToggleApplyToAll && (

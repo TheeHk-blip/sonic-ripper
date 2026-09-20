@@ -19,7 +19,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; frame-src 'self' https://sonic-worker.muguropeter15.workers.dev/ https://www.youtube.com https://www.youtube-nocookie.com https://*.youtube.com; media-src 'self' blob: https://*.googlevideo.com; img-src 'self' https://*.ytimg.com data: blob:; script-src 'self' 'unsafe-inline' https://www.youtube.com https://www.youtube-nocookie.com; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* https://*.youtube.com https://*.googlevideo.com",
+      "csp": "default-src 'self'; frame-src 'self' https://sonic-worker.muguropeter15.workers.dev/ https://www.youtube.com https://www.youtube-nocookie.com https://*.youtube.com; media-src 'self' blob: https://*.googlevideo.com; img-src 'self' https: http: data: blob:; script-src 'self' 'unsafe-inline' https://www.youtube.com https://www.youtube-nocookie.com; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* https://*.youtube.com https://*.googlevideo.com",
       "assetProtocol": {
         "enable": true,
         "scope": ["$APPCACHE/**"]

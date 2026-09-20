@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { Track } from '../types';
 
 export async function saveCoverImage(
@@ -200,5 +201,38 @@ export async function generateTrackSpectrogram(
     });
   } catch (err) {
     throw toError(err);
+  }
+}
+
+export interface OnlineCoverResult {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  coverUrl: string;
+  thumbnailUrl: string;
+  source: string;
+}
+
+export async function searchOnlineCovers(
+  query: string,
+  source?: 'store' | 'web'
+): Promise<OnlineCoverResult[]> {
+  try {
+    return await invoke<OnlineCoverResult[]>('search_online_covers', {
+      query,
+      source: source ?? null,
+    });
+  } catch (err) {
+    throw toError(err);
+  }
+}
+
+export async function openExternalUrl(url: string): Promise<void> {
+  try {
+    await openUrl(url);
+  } catch (err) {
+    console.warn('Failed to open URL via plugin-opener, falling back to window.open:', err);
+    window.open(url, '_blank', 'noopener,noreferrer');
   }
 }
