@@ -1,6 +1,7 @@
 import { Track } from '../types';
 import { motion } from 'motion/react';
 import { Download, CheckCircle, XCircle, Clock, Play } from 'lucide-react';
+import { useI18n } from '../lib/i18n';
 
 interface TrackRowProps {
   track: Track;
@@ -10,6 +11,8 @@ interface TrackRowProps {
   activeTrackId?: string | null;
   isBatchDownloading?: boolean;
   isFolderDownloading?: boolean;
+  isSelected?: boolean;
+  onSelectTrack?: (index: number) => void;
 }
 
 export default function TrackRow({
@@ -20,7 +23,11 @@ export default function TrackRow({
   activeTrackId,
   isBatchDownloading,
   isFolderDownloading,
+  isSelected,
+  onSelectTrack,
 }: TrackRowProps) {
+  const { t } = useI18n();
+
   const formatTime = (secs: number) => {
     const minutes = Math.floor(secs / 60);
     const remainingSecs = secs % 60;
@@ -41,15 +48,25 @@ export default function TrackRow({
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
-      className="flex flex-col border-b border-olive py-1 md:py-3"
+      onClick={() => onSelectTrack?.(index)}
+      className={`flex flex-col border-b border-olive py-1.5 md:py-3 transition-all cursor-pointer ${
+        isSelected
+          ? 'bg-olive/25 border-l-4 border-l-gold pl-2.5 md:pl-3 shadow-inner ring-1 ring-gold/20'
+          : 'hover:bg-charcoal/40 border-l-4 border-l-transparent pl-1 md:pl-2'
+      }`}
     >
       <div className="flex flex-row items-center w-full gap-3">
         {/* Track No & Album Cover */}
         <div className="flex flex-row w-20 md:w-30 gap-2 items-center mr-3">
-          <span>{trackNumStr}</span>
+          <span className={isSelected ? 'font-bold text-gold font-mono' : 'font-mono'}>
+            {trackNumStr}
+          </span>
           <div
-            onClick={() => onPlayTrack(track)}
-            title="Click to Preview"
+            onClick={e => {
+              e.stopPropagation();
+              onPlayTrack(track);
+            }}
+            title={t.clickToPreview}
             className="relative group shrink-0 size-16 md:size-20 cursor-pointer select-none"
           >
             <img
@@ -105,12 +122,15 @@ export default function TrackRow({
         <div className="flex items-center w-20 ml-auto transition-all duration-300">
           <button
             type="button"
-            onClick={() => onDownloadSingle(track)}
+            onClick={e => {
+              e.stopPropagation();
+              onDownloadSingle(track);
+            }}
             disabled={isProcessing || isBatchDownloading || isFolderDownloading}
             className={`rounded-sm p-2 hover:scale-105 cursor-pointer ${
               track.status === 'completed' ? 'bg-gold' : 'bg-charcoal'
             }`}
-            title="Download Song"
+            title={t.downloadSong}
           >
             {track.status === 'completed' ? (
               <CheckCircle className="size-5" />
@@ -127,10 +147,10 @@ export default function TrackRow({
           <div className="flex items-center text-xs justify-between uppercase">
             <span>
               {track.status === 'scraping'
-                ? 'SCRAPING STREAM URL'
+                ? t.statusScraping
                 : track.status === 'downloading'
-                  ? 'DOWNLOADING'
-                  : 'INJECTING TAGS &  ARTWORK'}
+                  ? t.statusDownloading
+                  : t.statusTagging}
             </span>
             <span>{track.progress}%</span>
           </div>

@@ -8,6 +8,7 @@ export interface Track {
   totalTracks?: number;
   duration: number;
   coverUrl: string;
+  originalCoverUrl?: string;
   previewUrl: string | null;
   status: 'idle' | 'scraping' | 'downloading' | 'transcoding' | 'tagging' | 'completed' | 'failed';
   progress: number;
@@ -32,6 +33,7 @@ export interface DownloadSettings {
   videoQuality?: '1080p' | '720p' | '480p' | '360p' | 'best';
   saveInFolder?: boolean;
   skipMissingTracks?: boolean;
-  namingPattern?: 'number_artist_title' | 'artist_title' | 'title';
+  namingPattern?: string;
   embedId3Tags?: boolean;
+  downloadLyrics?: boolean;
 }

@@ -1,5 +1,7 @@
+mod covers;
 mod download;
 mod error;
+mod lyrics;
 mod models;
 mod settings;
 mod spotify;
@@ -103,8 +105,12 @@ pub fn run() {
             analyze,
             download::download_track,
             download::download_batch,
+            download::save_cover_file,
+            download::generate_track_spectrogram,
             settings::get_settings,
-            settings::set_download_folder
+            settings::set_download_folder,
+            settings::set_naming_pattern,
+            covers::search_online_covers
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,7 +1,18 @@
 import { useEffect, useState } from 'react';
 import { DownloadSettings, AudioFormat, Bitrate } from '../types';
-import { Settings, FileAudio, Disc, FileVideo, FolderOpen, RefreshCw } from 'lucide-react';
-import { getSettings, pickDownloadFolder } from '../lib/api';
+import {
+  Settings,
+  FileAudio,
+  Disc,
+  FileVideo,
+  FolderOpen,
+  RefreshCw,
+  FolderTree,
+  Folder,
+  FileText,
+} from 'lucide-react';
+import { getSettings, pickDownloadFolder, setNamingPattern } from '../lib/api';
+import { useI18n } from '../lib/i18n';
 
 interface SettingsPanelProps {
   settings: DownloadSettings;
@@ -9,6 +20,7 @@ interface SettingsPanelProps {
 }
 
 export default function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
+  const { t } = useI18n();
   const [downloadFolder, setDownloadFolder] = useState<string | null>(null);
   const [folderLoading, setFolderLoading] = useState(true);
   const [folderPicking, setFolderPicking] = useState(false);
@@ -49,10 +61,10 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
   ];
 
   const bitrates: { value: Bitrate; label: string; desc: string }[] = [
-    { value: '128k', label: '128 Kbps', desc: 'Standard quality, smaller file' },
-    { value: '256k', label: '256 Kbps', desc: 'High quality, balanced file size' },
-    { value: '320k', label: '320 Kbps', desc: 'Extreme quality, best for MP3/M4A' },
-    { value: 'lossless', label: 'Lossless', desc: 'Original studio master quality' },
+    { value: '128k', label: '128 Kbps', desc: t.bitrate128Desc },
+    { value: '256k', label: '256 Kbps', desc: t.bitrate256Desc },
+    { value: '320k', label: '320 Kbps', desc: t.bitrate320Desc },
+    { value: 'lossless', label: 'Lossless', desc: t.bitrateLosslessDesc },
   ];
 
   const videoQualities: {
@@ -63,23 +75,23 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
     {
       value: 'best',
       label: 'Max Resolution',
-      desc: 'Highest available video feed with premium audio',
+      desc: t.videoBestDesc,
     },
     {
       value: '1080p',
       label: 'Full HD (1080p)',
-      desc: '1920x1080 resolution high-definition video stream',
+      desc: t.video1080pDesc,
     },
-    { value: '720p', label: 'Standard HD (720p)', desc: '1280x720 standard HD video stream' },
+    { value: '720p', label: 'Standard HD (720p)', desc: t.video720pDesc },
     {
       value: '480p',
       label: 'Standard Quality (480p)',
-      desc: '854x480 standard definition video stream',
+      desc: t.video480pDesc,
     },
     {
       value: '360p',
       label: 'Compact Quality (360p)',
-      desc: '640x360 compact video (optimized for bandwidth)',
+      desc: t.video360pDesc,
     },
   ];
 
@@ -90,14 +102,14 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
     <div className="p-6 shadow-xl relative">
       <div className="flex items-center gap-3 mb-6 border-b border-olive pb-4">
         <Settings className="size-5 text-cream" />
-        <h2 className="uppercase font-display">02 / Export Configuration</h2>
+        <h2 className="uppercase font-display">{t.exportConfigTitle}</h2>
       </div>
 
       <div className="flex flex-col gap-6">
         {/* Format selection */}
         <div>
           <label className="block text-xs text-olive uppercase tracking-[0.2em] mb-3 font-semibold">
-            Output Format
+            {t.outputFormatTitle}
           </label>
           <div className="grid grid-cols-2 gap-3">
             {formats.map(f => {
@@ -132,7 +144,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
         {/* Bitrate or Video Quality selection */}
         <div>
           <label className="block text-xs uppercase tracking-[0.2em] text-olive mb-3 font-semibold">
-            {isVideoFormat ? 'Video Quality / Resolution' : 'Audio Quality (Bitrate)'}
+            {isVideoFormat ? t.videoQualityTitle : t.audioQualityTitle}
           </label>
           {isVideoFormat ? (
             <div className="space-y-3">
@@ -170,10 +182,9 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
           ) : isLosslessOnly ? (
             <div className="rounded p-5 h-40 flex flex-col justify-center items-center text-center text-olive">
               <Disc className="w-8 h-8 mb-3" />
-              <p className="text-sm uppercase mb-1">Lossless Locked</p>
+              <p className="text-sm uppercase mb-1">{t.losslessLocked}</p>
               <p className="text-xs max-w-60 leading-relaxed">
-                {settings.format === 'flac' ? 'FLAC' : 'WAV'} is inherently lossless and ignores
-                bitrate compressions.
+                {settings.format === 'flac' ? 'FLAC' : 'WAV'} {t.losslessLockedDesc}
               </p>
             </div>
           ) : (
@@ -218,12 +229,12 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
           {isLosslessOnly && (
             <div className="mt-4">
               <label className="block text-xs uppercase tracking-[0.3em] text-cream mb-2 font-semibold">
-                Lossless Frequency (Sample Rate)
+                {t.sampleRateTitle}
               </label>
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  { value: '44100', label: '44.1 kHz', desc: 'CD Quality' },
-                  { value: '48000', label: '48.0 kHz', desc: 'Studio Quality' },
+                  { value: '44100', label: '44.1 kHz', desc: t.cdQuality },
+                  { value: '48000', label: '48.0 kHz', desc: t.studioQuality },
                 ].map(sr => {
                   const active = (settings.sampleRate || '44100') === sr.value;
                   return (
@@ -252,61 +263,241 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
       {/* Batch download & Folder Organization settings */}
       <div className="border-t border-olive pt-6 mt-6">
         <label className="block text-sm uppercase tracking-[0.2em] mb-3 font-semibold">
-          Tagging & Organization
+          {t.taggingOrgTitle}
         </label>
 
-        {/* Naming Pattern */}
-        <div className="mb-5">
-          <span className="block text-xs font-black uppercase tracking-wider text-cream mb-1">
-            File Naming Pattern
-          </span>
+        {/* Naming Pattern / Download Path Hierarchy */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-black uppercase tracking-wider text-cream flex items-center gap-1.5">
+              <FolderTree className="w-3.5 h-3.5 text-gold" />
+              {t.pathPatternTitle}
+            </span>
+          </div>
           <span className="block text-xs text-rust leading-relaxed font-mono mb-3">
-            Choose how output filenames are structured when saved or zipped.
+            {t.pathPatternDesc}
           </span>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            {(
-              [
-                {
-                  id: 'artist_title',
-                  label: 'Artist - Title',
-                  example: 'Daft Punk - One More Time.mp3',
-                },
-                {
-                  id: 'number_artist_title',
-                  label: '01 - Artist - Title',
-                  example: '01 - Daft Punk - One More Time.mp3',
-                },
-                { id: 'title', label: 'Title Only', example: 'One More Time.mp3' },
-              ] satisfies {
-                id: NonNullable<DownloadSettings['namingPattern']>;
-                label: string;
-                example: string;
-              }[]
-            ).map(pattern => (
-              <button
-                key={pattern.id}
-                type="button"
-                id={`btn-naming-${pattern.id}`}
-                onClick={() =>
-                  onChange({
-                    ...settings,
-                    namingPattern: pattern.id,
-                  })
-                }
-                className={`p-3 text-left border-2 rounded-md transition-all flex flex-col justify-between ${
-                  (settings.namingPattern || 'artist_title') === pattern.id
-                    ? 'border-rust'
-                    : 'scale-98 opacity-70 hover:opacity-100'
-                }`}
-              >
-                <span
-                  className={`text-xs font-bold tracking-tight ${settings.namingPattern === pattern.id ? 'text-rust' : ''} `}
+
+          {/* Quick Presets (Exactly 4 presets) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+            {[
+              {
+                id: '{artist}/{year} - {album}/{trackNumber} - {title}',
+                aliasIds: ['artist_year_album_track_title'],
+                label: t.presetArtistYearAlbumTrack,
+                badge: t.recommendedBadge,
+                example: 'Daft Punk/2001 - Discovery/01 - One More Time',
+              },
+              {
+                id: '{artist}/{album}/{trackNumber} - {title}',
+                aliasIds: ['artist_album_track_title'],
+                label: t.presetArtistAlbumTrack,
+                badge: undefined,
+                example: 'Daft Punk/Discovery/01 - One More Time',
+              },
+              {
+                id: '{trackNumber} - {artist} - {title}',
+                aliasIds: ['number_artist_title'],
+                label: t.presetNumberArtistTitle,
+                badge: t.flatBadge,
+                example: '01 - Daft Punk - One More Time',
+              },
+              {
+                id: '{artist} - {title}',
+                aliasIds: ['artist_title'],
+                label: t.presetArtistTitle,
+                badge: t.flatBadge,
+                example: 'Daft Punk - One More Time',
+              },
+            ].map(preset => {
+              const current = settings.namingPattern || 'number_artist_title';
+              const isSelected = current === preset.id || preset.aliasIds.includes(current);
+
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  id={`btn-naming-preset-${preset.aliasIds[0] || 'custom'}`}
+                  onClick={() => {
+                    onChange({
+                      ...settings,
+                      namingPattern: preset.id,
+                    });
+                    setNamingPattern(preset.id).catch(() => {});
+                  }}
+                  className={`p-2.5 text-left border-2 rounded-md transition-all flex flex-col justify-between cursor-pointer ${
+                    isSelected
+                      ? 'border-gold bg-gold/10'
+                      : 'border-rust/40 scale-98 opacity-70 hover:opacity-100 hover:border-rust'
+                  }`}
                 >
-                  {pattern.label}
-                </span>
-                <span className="text-[9px] text-cream/60 mt-1 truncate">{pattern.example}</span>
-              </button>
-            ))}
+                  <div className="flex items-center justify-between gap-1">
+                    <span
+                      className={`text-xs font-bold tracking-tight truncate ${
+                        isSelected ? 'text-gold' : 'text-cream'
+                      }`}
+                    >
+                      {preset.label}
+                    </span>
+                    {preset.badge && (
+                      <span className="text-[9px] px-1.5 py-0.2 bg-olive/40 text-cream rounded border border-olive/50 shrink-0">
+                        {preset.badge}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[9px] text-cream/60 mt-1 truncate font-mono">
+                    {preset.example}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Custom Pattern Input */}
+          <div className="bg-charcoal/60 border border-rust/30 rounded-md p-3 mb-3">
+            <label className="block text-[11px] font-bold uppercase tracking-wider text-cream mb-1">
+              {t.editCustomPattern}
+            </label>
+            <input
+              type="text"
+              id="input-naming-pattern"
+              value={settings.namingPattern || ''}
+              placeholder="{artist}/{year} - {album}/{trackNumber} - {title}"
+              onChange={e => {
+                const val = e.target.value;
+                onChange({
+                  ...settings,
+                  namingPattern: val,
+                });
+                setNamingPattern(val).catch(() => {});
+              }}
+              className="w-full px-3 py-2 bg-charcoal border border-rust/40 focus:border-gold rounded text-xs font-mono text-cream focus:outline-none transition-all placeholder:text-cream/30"
+            />
+
+            {/* Quick Variable Insertion Chips */}
+            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+              <span className="text-[10px] text-rust uppercase font-semibold mr-1">
+                {t.insertLabel}
+              </span>
+              {[
+                { tag: '{artist}', label: t.chipArtist },
+                { tag: '{year}', label: t.chipYear },
+                { tag: '{album}', label: t.chipAlbum },
+                { tag: '{trackNumber}', label: t.chipTrackNumber },
+                { tag: '{title}', label: t.chipTitle },
+                { tag: '{totalTracks}', label: t.chipTotalTracks },
+                { tag: '{playlist}', label: t.chipPlaylist },
+                { tag: '/', label: t.chipSlash },
+              ].map(item => (
+                <button
+                  key={item.tag}
+                  type="button"
+                  onClick={() => {
+                    const current = settings.namingPattern || '';
+                    const needsSep =
+                      item.tag !== '/' &&
+                      current.length > 0 &&
+                      !current.endsWith('/') &&
+                      !current.endsWith(' ') &&
+                      !current.endsWith('-');
+                    const nextVal = current + (needsSep ? ' ' : '') + item.tag;
+                    onChange({ ...settings, namingPattern: nextVal });
+                    setNamingPattern(nextVal).catch(() => {});
+                  }}
+                  className="px-2 py-0.8 bg-charcoal hover:bg-olive/40 border border-rust/40 hover:border-gold rounded text-[10px] font-mono text-cream/90 transition-all cursor-pointer"
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Live Path Preview */}
+          <div className="p-3 bg-charcoal/80 border border-olive/50 rounded-md">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-gold">
+                {t.livePreviewTitle}
+              </span>
+            </div>
+            {(() => {
+              let template =
+                settings.namingPattern || '{artist}/{year} - {album}/{trackNumber} - {title}';
+              if (template === 'number_artist_title') {
+                template = '{trackNumber} - {artist} - {title}';
+              } else if (template === 'artist_title') {
+                template = '{artist} - {title}';
+              } else if (template === 'artist_year_album_track_title') {
+                template = '{artist}/{year} - {album}/{trackNumber} - {title}';
+              } else if (template === 'artist_album_track_title') {
+                template = '{artist}/{album}/{trackNumber} - {title}';
+              }
+
+              const ext = settings.format === 'mp4' ? 'mp4' : settings.format;
+              const replaced = template
+                .replace(
+                  /{artist}|{artista}|{nombre Artista}|{nombre_artista}|{nombreArtista}/g,
+                  'Daft Punk'
+                )
+                .replace(/{album}|{nombre album}|{nombre_album}|{nombreAlbum}/g, 'Discovery')
+                .replace(
+                  /{year}|{año}|{ano}|{albumYear}|{album_year}|{año del album}|{ano del album}/g,
+                  '2001'
+                )
+                .replace(
+                  /{trackNumber}|{track_number}|{track}|{pista}|{numero de pista}|{numero}/g,
+                  '01'
+                )
+                .replace(/{totalTracks}|{total_tracks}|{total pistas}/g, '14')
+                .replace(/{title}|{titulo}|{titulo de la pista}|{nombre pista}/g, 'One More Time')
+                .replace(
+                  /{playlist}|{playlistName}|{playlist_name}|{lista}/g,
+                  'Best of Electronic'
+                );
+
+              const segments = replaced
+                .replace(/^[/\\]+/, '')
+                .split(/[/\\]+/)
+                .map(s => s.trim().replace(/^[-_\s]+|[-_\s]+$/g, ''))
+                .filter(Boolean);
+
+              const fileName =
+                segments.length > 0
+                  ? `${segments[segments.length - 1]}.${ext}`
+                  : `Daft Punk - One More Time.${ext}`;
+              const folders = segments.length > 1 ? segments.slice(0, -1) : [];
+              const baseFolder = downloadFolder
+                ? downloadFolder.replace(/[/\\]+$/, '')
+                : `[${t.downloadFolderTitle}]`;
+              const fullPath = [baseFolder, ...folders, fileName].join('/');
+
+              return (
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-1 font-mono text-[11px]">
+                    <span className="px-1.5 py-0.5 bg-olive/30 text-cream/70 rounded flex items-center gap-1">
+                      <FolderOpen className="w-3 h-3 text-gold/70" />
+                      {baseFolder.split('/').pop() || t.downloadFolderTitle}
+                    </span>
+                    {folders.map((f, i) => (
+                      <span key={i} className="flex items-center gap-1">
+                        <span className="text-rust/60">/</span>
+                        <span className="px-1.5 py-0.5 bg-olive/20 text-cream rounded flex items-center gap-1 border border-olive/30">
+                          <Folder className="w-3 h-3 text-gold" />
+                          {f}
+                        </span>
+                      </span>
+                    ))}
+                    <span className="text-rust/60">/</span>
+                    <span className="px-1.5 py-0.5 bg-charcoal text-gold font-bold rounded border border-gold/40 flex items-center gap-1">
+                      <FileAudio className="w-3 h-3 text-gold" />
+                      {fileName}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-cream/50 font-mono break-all select-all">
+                    {fullPath}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -315,11 +506,10 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
           <div className="flex items-start justify-between gap-4">
             <div className="flex flex-col gap-1">
               <span className="text-xs font-black uppercase tracking-wider text-cream">
-                Embed ID3 Tags & Artwork
+                {t.embedId3Title}
               </span>
               <span className="text-[10px] md:text-xs text-rust leading-relaxed">
-                Embeds Title, Artist, Album, Year, Track Number, and High-Res Artwork directly into
-                the audio file headers.
+                {t.embedId3Desc}
               </span>
             </div>
             <button
@@ -347,13 +537,10 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
           <div className="flex items-start justify-between gap-4" id="download-folder-wrapper">
             <div className="flex flex-col gap-1 min-w-0">
               <span className="text-xs font-black uppercase tracking-wider text-cream">
-                Download Folder
+                {t.downloadFolderTitle}
               </span>
               <span className="text-[10px] md:text-sm text-rust leading-relaxed truncate">
-                {folderLoading
-                  ? 'Loading…'
-                  : downloadFolder ||
-                    'No folder set — downloads will be blocked until you choose one.'}
+                {folderLoading ? t.loadingFolder : downloadFolder || t.noFolderSet}
               </span>
             </div>
             <button
@@ -368,7 +555,42 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
               ) : (
                 <FolderOpen className="w-3.5 h-3.5" />
               )}
-              {downloadFolder ? 'Change' : 'Choose'}
+              {downloadFolder ? t.btnChange : t.btnChoose}
+            </button>
+          </div>
+
+          {/* Download Lyrics (.txt) Toggle */}
+          <div className="flex items-start justify-between gap-4" id="download-lyrics-wrapper">
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-black uppercase tracking-wider text-cream flex items-center gap-1.5">
+                <FileText className="w-3.5 h-3.5 text-gold" />
+                {t.downloadLyricsTitle}
+                <span className="text-[9px] px-1.5 py-0.2 bg-olive/40 text-cream rounded border border-olive/50 shrink-0 font-mono">
+                  .TXT
+                </span>
+              </span>
+              <span className="text-[10px] md:text-xs text-rust leading-relaxed">
+                {t.downloadLyricsDesc}
+              </span>
+            </div>
+            <button
+              type="button"
+              id="btn-toggle-lyrics"
+              onClick={() =>
+                onChange({
+                  ...settings,
+                  downloadLyrics: !settings.downloadLyrics,
+                })
+              }
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                settings.downloadLyrics ? 'bg-olive' : 'bg-cream'
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-4 w-4 bg-black transform rounded-full shadow ring-0 transition duration-200 ease-in-out ${
+                  settings.downloadLyrics ? 'translate-x-4' : 'translate-x-0'
+                }`}
+              />
             </button>
           </div>
 
@@ -376,11 +598,10 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
           <div className="flex items-start justify-between gap-4">
             <div className="flex flex-col gap-1">
               <span className="text-xs font-black uppercase tracking-wider text-cream">
-                Skip Missing Tracks
+                {t.skipMissingTitle}
               </span>
               <span className="text-[10px] md:text-sm text-rust leading-relaxed">
-                Automatically skip tracks that are unavailable or fail to download instead of
-                aborting the batch.
+                {t.skipMissingDesc}
               </span>
             </div>
             <button
@@ -406,14 +627,14 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
       {/* Bypass Bot Detection Section */}
       <div className="mt-6 pt-6">
         <label className="block text-sm uppercase tracking-[0.2em] text-gold mb-2 font-semibold">
-          Bypass YouTube Bot Block
+          {t.bypassBotTitle}
         </label>
 
         <div className="flex flex-col gap-4">
           {/* Browser Profile extraction option */}
           <div>
             <p className="text-[9px] md:text-xs text-rust mb-3 leading-relaxed">
-              Extract session cookies automatically from your active browser profile.
+              {t.bypassBotDesc}
             </p>
             <select
               id="browser-cookies-select"
@@ -424,7 +645,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
               }}
               className="w-full p-3 text-[10px] text-charcoal transition-all cursor-pointer"
             >
-              <option value="">-- None (Use Manual Paste) --</option>
+              <option value="">{t.noneBrowserOption}</option>
               <option value="chrome">Google Chrome</option>
               <option value="firefox">Mozilla Firefox</option>
               <option value="safari">Apple Safari</option>
@@ -439,12 +660,9 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
           {!settings.cookiesFromBrowser && (
             <div>
               <span className="block text-xs uppercase tracking-[0.2em] mb-2 font-semibold">
-                Or Paste Netscape Cookies
+                {t.orPasteCookiesTitle}
               </span>
-              <p className="text-xs mb-3 leading-relaxed">
-                Manually paste your Netscape cookies file text if browser extraction is not
-                available on your current device setup.
-              </p>
+              <p className="text-xs mb-3 leading-relaxed">{t.orPasteCookiesDesc}</p>
               <textarea
                 id="cookies-text-input"
                 value={settings.youtubeCookies || ''}
@@ -459,16 +677,11 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
           {settings.cookiesFromBrowser && (
             <div className="p-4 rounded-none flex flex-col justify-center">
               <span className="block text-xs uppercase tracking-wide text-gold mb-1 font-bold">
-                Browser Extract Mode: {settings.cookiesFromBrowser.toUpperCase()}
+                {t.browserExtractMode} {settings.cookiesFromBrowser.toUpperCase()}
               </span>
-              <p className="text-xs text-cream/50 leading-relaxed">
-                The download engine will dynamically parse cookies from your active{' '}
-                {settings.cookiesFromBrowser} profile on request.
-              </p>
+              <p className="text-xs text-cream/50 leading-relaxed">{t.browserExtractDesc}</p>
               <p className="text-xs text-gold/80 leading-relaxed mt-2">
-                <strong>Tip:</strong> if downloads intermittently fail to read cookies, close{' '}
-                {settings.cookiesFromBrowser} first — it locks its cookie database while running,
-                which can block extraction.
+                <strong>Tip:</strong> {t.browserExtractTip}
               </p>
             </div>
           )}
