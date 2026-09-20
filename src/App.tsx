@@ -510,9 +510,19 @@ export default function App() {
             </div>
             <p className="tracking-wider text-xs uppercase mt-2">{t.subtitle}</p>
           </div>
-          <div className="mt-3 sm:mt-0">
-            <LanguageSelector />
-          </div>
+          <AnimatePresence>
+            {step === 'source' && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.2 }}
+                className="mt-3 sm:mt-0"
+              >
+                <LanguageSelector />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </header>
 
         <StepProgress current={step} />
