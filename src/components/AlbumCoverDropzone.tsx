@@ -547,10 +547,6 @@ export default function AlbumCoverDropzone({
                         scrollbarColor: 'var(--color-gold) transparent',
                       }}
                     >
-                      <div className="text-[10px] uppercase font-bold text-cream/50 px-2 py-1 border-b border-olive/30 mb-1 flex items-center justify-between">
-                        <span>{t.coverDropzonePaletteLabel}</span>
-                        <span className="text-gold font-mono">{SPECTROGRAM_PALETTES.length}</span>
-                      </div>
                       {SPECTROGRAM_PALETTES.map(p => {
                         const isSelected = p.id === spectrogramPalette;
                         return (
