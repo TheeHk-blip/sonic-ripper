@@ -1410,6 +1410,65 @@ pub async fn save_cover_file(cover_url: String, target_path: String) -> Result<(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn generate_track_spectrogram(
+    app: AppHandle,
+    track: Track,
+    youtube_cookies: Option<String>,
+    cookies_from_browser: Option<String>,
+) -> Result<String, AppError> {
+    let preview_url = track
+        .preview_url
+        .as_deref()
+        .ok_or_else(|| AppError::TrackNotFound {
+            title: track.title.clone(),
+            artist: track.artist.clone(),
+        })?;
+
+    let work_dir = tempfile::Builder::new()
+        .prefix("sonic-spectrogram-")
+        .tempdir()
+        .map_err(AppError::from)?;
+
+    let cookies_file_path =
+        write_cookies_file(youtube_cookies.as_deref(), work_dir.path()).await?;
+
+    let auth = CookieAuth {
+        cookies_path: cookies_file_path.as_deref(),
+        cookies_from_browser: cookies_from_browser.as_deref(),
+    };
+
+    // 1. Download raw audio from stream
+    let raw_audio = download_audio(&app, &track.id, preview_url, work_dir.path(), auth).await?;
+
+    // 2. Output spectrogram PNG path
+    let spec_path = work_dir.path().join("spectrogram.png");
+
+    // 3. Generate high-fidelity 1000x1000 spectrogram with logarithmic frequency scale and dB legend
+    let ffmpeg_args = vec![
+        "-y".to_string(),
+        "-i".to_string(),
+        raw_audio.to_string_lossy().into_owned(),
+        "-lavfi".to_string(),
+        "showspectrumpic=s=1000x1000:mode=combined:color=magma:scale=log:fscale=log:legend=1".to_string(),
+        "-f".to_string(),
+        "image2".to_string(),
+        "-update".to_string(),
+        "1".to_string(),
+        spec_path.to_string_lossy().into_owned(),
+    ];
+
+    run_ffmpeg(&app, &ffmpeg_args).await?;
+
+    // 4. Read generated image bytes and convert to Base64 Data URL
+    let bytes = fs::read(&spec_path)
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to read spectrogram image: {e}")))?;
+
+    let b64 = base64_encode(&bytes);
+    Ok(format!("data:image/png;base64,{b64}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

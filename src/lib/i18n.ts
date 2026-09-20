@@ -170,6 +170,9 @@ export interface Translations {
   coverDropzoneApplyToAllHintOn: string;
   coverDropzoneApplyToAllHintOff: string;
   coverDropzoneTrackIndicator: (current: number, total: number) => string;
+  coverDropzoneSpectrogramBtn: string;
+  coverDropzoneGeneratingSpectrogram: string;
+  coverDropzoneSpectrogramTitle: string;
 }
 
 const es: Translations = {
@@ -337,6 +340,9 @@ const es: Translations = {
   coverDropzoneApplyToAllHintOn: 'Activado: El cambio se aplicará a todas las pistas',
   coverDropzoneApplyToAllHintOff: 'Desactivado: El cambio solo afectará a esta pista',
   coverDropzoneTrackIndicator: (current: number, total: number) => `Pista ${current} de ${total}`,
+  coverDropzoneSpectrogramBtn: 'Espectro',
+  coverDropzoneGeneratingSpectrogram: 'Generando espectro...',
+  coverDropzoneSpectrogramTitle: 'Generar e incrustar espectrograma de audio',
 };
 
 const ca: Translations = {
@@ -506,6 +512,9 @@ const ca: Translations = {
   coverDropzoneApplyToAllHintOn: "Activat: El canvi s'aplicarà a totes les pistes",
   coverDropzoneApplyToAllHintOff: 'Desactivat: El canvi només afectarà a aquesta pista',
   coverDropzoneTrackIndicator: (current: number, total: number) => `Pista ${current} de ${total}`,
+  coverDropzoneSpectrogramBtn: 'Espectre',
+  coverDropzoneGeneratingSpectrogram: 'Generant espectre...',
+  coverDropzoneSpectrogramTitle: "Generar i incrustar espectrograma d'àudio",
 };
 
 const en: Translations = {
@@ -672,6 +681,9 @@ const en: Translations = {
   coverDropzoneApplyToAllHintOn: 'Enabled: Changes will apply to all tracks',
   coverDropzoneApplyToAllHintOff: 'Disabled: Changes will only affect this track',
   coverDropzoneTrackIndicator: (current: number, total: number) => `Track ${current} of ${total}`,
+  coverDropzoneSpectrogramBtn: 'Spectrum',
+  coverDropzoneGeneratingSpectrogram: 'Generating spectrum...',
+  coverDropzoneSpectrogramTitle: 'Generate and embed audio spectrogram',
 };
 
 const dictionaries: Record<Language, Translations> = { es, ca, en };

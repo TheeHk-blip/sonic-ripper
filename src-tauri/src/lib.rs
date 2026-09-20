@@ -104,6 +104,7 @@ pub fn run() {
             download::download_track,
             download::download_batch,
             download::save_cover_file,
+            download::generate_track_spectrogram,
             settings::get_settings,
             settings::set_download_folder,
             settings::set_naming_pattern

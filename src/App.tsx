@@ -26,6 +26,7 @@ import {
   downloadBatch,
   getSettings,
   pickDownloadFolder,
+  generateTrackSpectrogram,
 } from './lib/api';
 import { useVirtualizer } from './lib/useVirtualizer';
 import TrackRow from './components/TrackRow';
@@ -426,6 +427,22 @@ export default function App() {
     setSelectedTrackIndex(prev => (prev < tracks.length - 1 ? prev + 1 : 0));
   };
 
+  const handleGenerateSpectrogram = async () => {
+    if (!activeTrack) return;
+    try {
+      setError(null);
+      const specDataUrl = await generateTrackSpectrogram(
+        activeTrack,
+        settings.youtubeCookies,
+        settings.cookiesFromBrowser
+      );
+      handleCoverChange(specDataUrl);
+    } catch (err) {
+      console.error('Failed to generate spectrogram:', err);
+      setError(friendlyError(err, t) || t.errGeneric);
+    }
+  };
+
   return (
     <div className="flex min-h-screen w-full overflow-hidden p-2.5">
       <div className="flex flex-col justify-center h-full w-full relative z-10">
@@ -683,6 +700,7 @@ export default function App() {
                   isCustom={isSelectedTrackCustom}
                   onCoverChange={handleCoverChange}
                   onResetCover={handleResetCover}
+                  onGenerateSpectrogram={handleGenerateSpectrogram}
                   disabled={isBatchDownloading || isFolderDownloading}
                   trackTitle={activeTrack?.title}
                   trackArtist={activeTrack?.artist}

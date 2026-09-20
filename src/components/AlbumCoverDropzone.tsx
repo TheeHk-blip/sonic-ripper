@@ -8,6 +8,7 @@ import {
   RefreshCw,
   ChevronLeft,
   ChevronRight,
+  Activity,
 } from 'lucide-react';
 import { useI18n } from '../lib/i18n';
 import { saveCoverImage } from '../lib/api';
@@ -26,6 +27,7 @@ interface AlbumCoverDropzoneProps {
   onToggleApplyToAll?: (applyToAll: boolean) => void;
   onPrevTrack?: () => void;
   onNextTrack?: () => void;
+  onGenerateSpectrogram?: () => Promise<void>;
 }
 
 export default function AlbumCoverDropzone({
@@ -42,12 +44,25 @@ export default function AlbumCoverDropzone({
   onToggleApplyToAll,
   onPrevTrack,
   onNextTrack,
+  onGenerateSpectrogram,
 }: AlbumCoverDropzoneProps) {
   const { t } = useI18n();
   const [isDragging, setIsDragging] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
+  const [isGeneratingSpectrogram, setIsGeneratingSpectrogram] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleSpectrogramClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onGenerateSpectrogram || isGeneratingSpectrogram || disabled) return;
+    setIsGeneratingSpectrogram(true);
+    try {
+      await onGenerateSpectrogram();
+    } finally {
+      setIsGeneratingSpectrogram(false);
+    }
+  };
 
   const handleDownloadImage = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -275,6 +290,28 @@ export default function AlbumCoverDropzone({
                   <Download className="w-3.5 h-3.5 text-gold" />
                 )}
                 <span>{t.coverDropzoneDownloadBtn}</span>
+              </button>
+            )}
+
+            {/* Generate & embed audio spectrogram button (discreet) */}
+            {onGenerateSpectrogram && (
+              <button
+                type="button"
+                onClick={handleSpectrogramClick}
+                disabled={disabled || isGeneratingSpectrogram}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md bg-charcoal/80 hover:bg-rust/20 text-cream/90 border border-olive/50 hover:border-rust transition-all cursor-pointer disabled:opacity-50"
+                title={t.coverDropzoneSpectrogramTitle}
+              >
+                {isGeneratingSpectrogram ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-rust" />
+                ) : (
+                  <Activity className="w-3.5 h-3.5 text-rust" />
+                )}
+                <span>
+                  {isGeneratingSpectrogram
+                    ? t.coverDropzoneGeneratingSpectrogram
+                    : t.coverDropzoneSpectrogramBtn}
+                </span>
               </button>
             )}
 

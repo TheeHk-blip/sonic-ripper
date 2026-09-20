@@ -183,3 +183,19 @@ export async function stopPreview(): Promise<void> {
     throw toError(err);
   }
 }
+
+export async function generateTrackSpectrogram(
+  track: Track,
+  youtubeCookies?: string,
+  cookiesFromBrowser?: string
+): Promise<string> {
+  try {
+    return await invoke<string>('generate_track_spectrogram', {
+      track,
+      youtubeCookies: youtubeCookies || null,
+      cookiesFromBrowser: cookiesFromBrowser || null,
+    });
+  } catch (err) {
+    throw toError(err);
+  }
+}
