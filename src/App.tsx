@@ -88,7 +88,7 @@ export default function App() {
     skipMissingTracks: true,
     namingPattern: '{artist}/{year} - {album}/{trackNumber} - {title}',
     embedId3Tags: true,
-    downloadLyrics: true,
+    downloadLyrics: false,
   });
   const [isBatchDownloading, setIsBatchDownloading] = useState(false);
   const batchProgress = useMemo(() => {
@@ -216,7 +216,7 @@ export default function App() {
         namingPattern:
           settings.namingPattern || '{artist}/{year} - {album}/{trackNumber} - {title}',
         embedId3Tags: settings.embedId3Tags !== false,
-        downloadLyrics: settings.downloadLyrics !== false,
+        downloadLyrics: Boolean(settings.downloadLyrics),
       });
 
       setTracks(prev =>
@@ -263,7 +263,7 @@ export default function App() {
         namingPattern:
           settings.namingPattern || '{artist}/{year} - {album}/{trackNumber} - {title}',
         embedId3Tags: settings.embedId3Tags !== false,
-        downloadLyrics: settings.downloadLyrics !== false,
+        downloadLyrics: Boolean(settings.downloadLyrics),
       });
 
       setTracks(prev => prev.map(t => ({ ...t, status: 'completed', progress: 100 })));
@@ -328,7 +328,7 @@ export default function App() {
             videoQuality: settings.videoQuality,
             namingPattern: activePattern,
             embedId3Tags: settings.embedId3Tags !== false,
-            downloadLyrics: settings.downloadLyrics !== false,
+            downloadLyrics: Boolean(settings.downloadLyrics),
             albumFolder: hasCustomFolders ? undefined : total > 1 ? folderName : undefined,
             playlistName: playlistName || tracks[0]?.album,
           });

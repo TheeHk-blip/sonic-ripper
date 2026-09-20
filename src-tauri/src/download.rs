@@ -1196,7 +1196,7 @@ impl DownloadTrackArgs {
             video_quality: self.video_quality,
             naming_pattern: self.naming_pattern,
             embed_id3_tags: self.embed_id3_tags,
-            download_lyrics: self.download_lyrics.unwrap_or(true),
+            download_lyrics: self.download_lyrics.unwrap_or(false),
             playlist_name: self.playlist_name,
         }
     }
@@ -1246,7 +1246,7 @@ pub async fn download_batch(
         video_quality: args.video_quality.clone(),
         naming_pattern: args.naming_pattern.clone(),
         embed_id3_tags: args.embed_id3_tags,
-        download_lyrics: args.download_lyrics.unwrap_or(true),
+        download_lyrics: args.download_lyrics.unwrap_or(false),
         playlist_name: Some(args.playlist_name.clone()),
     });
 
