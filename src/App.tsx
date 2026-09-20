@@ -431,7 +431,7 @@ export default function App() {
     setSelectedTrackIndex(prev => (prev < tracks.length - 1 ? prev + 1 : 0));
   };
 
-  const handleGenerateSpectrogram = async () => {
+  const handleGenerateSpectrogram = async (palette = 'magma') => {
     if (tracks.length === 0) return;
 
     try {
@@ -441,6 +441,7 @@ export default function App() {
         if (!activeTrack) return;
         const specDataUrl = await generateTrackSpectrogram(
           activeTrack,
+          palette,
           settings.youtubeCookies,
           settings.cookiesFromBrowser
         );
@@ -466,6 +467,7 @@ export default function App() {
             try {
               const specDataUrl = await generateTrackSpectrogram(
                 track,
+                palette,
                 settings.youtubeCookies,
                 settings.cookiesFromBrowser
               );

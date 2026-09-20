@@ -1416,6 +1416,7 @@ pub async fn save_cover_file(cover_url: String, target_path: String) -> Result<(
 pub async fn generate_track_spectrogram(
     app: AppHandle,
     track: Track,
+    palette: Option<String>,
     youtube_cookies: Option<String>,
     cookies_from_browser: Option<String>,
 ) -> Result<String, AppError> {
@@ -1426,6 +1427,14 @@ pub async fn generate_track_spectrogram(
             title: track.title.clone(),
             artist: track.artist.clone(),
         })?;
+
+    let safe_palette = match palette.as_deref().unwrap_or("magma").to_lowercase().as_str() {
+        "magma" | "plasma" | "viridis" | "fire" | "fiery" | "rainbow" | "nebulae" | "cool"
+        | "green" | "cividis" | "fruit" | "moreland" | "terrain" | "intensity" | "channel" => {
+            palette.unwrap_or_else(|| "magma".to_string()).to_lowercase()
+        }
+        _ => "magma".to_string(),
+    };
 
     let work_dir = tempfile::Builder::new()
         .prefix("sonic-spectrogram-")
@@ -1452,7 +1461,9 @@ pub async fn generate_track_spectrogram(
         "-i".to_string(),
         raw_audio.to_string_lossy().into_owned(),
         "-lavfi".to_string(),
-        "showspectrumpic=s=1000x1000:mode=combined:color=magma:scale=log:fscale=log:legend=1".to_string(),
+        format!(
+            "showspectrumpic=s=1000x1000:mode=combined:color={safe_palette}:scale=log:fscale=log:legend=1"
+        ),
         "-f".to_string(),
         "image2".to_string(),
         "-update".to_string(),

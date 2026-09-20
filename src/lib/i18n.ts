@@ -173,6 +173,9 @@ export interface Translations {
   coverDropzoneSpectrogramBtn: string;
   coverDropzoneGeneratingSpectrogram: string;
   coverDropzoneSpectrogramTitle: string;
+  coverDropzoneMinimize: string;
+  coverDropzoneExpand: string;
+  coverDropzonePaletteLabel: string;
 }
 
 const es: Translations = {
@@ -343,6 +346,9 @@ const es: Translations = {
   coverDropzoneSpectrogramBtn: 'Espectro',
   coverDropzoneGeneratingSpectrogram: 'Generando espectro...',
   coverDropzoneSpectrogramTitle: 'Generar e incrustar espectrograma de audio',
+  coverDropzoneMinimize: 'Minimizar carátula',
+  coverDropzoneExpand: 'Estudio de carátula',
+  coverDropzonePaletteLabel: 'Paleta de color',
 };
 
 const ca: Translations = {
@@ -515,6 +521,9 @@ const ca: Translations = {
   coverDropzoneSpectrogramBtn: 'Espectre',
   coverDropzoneGeneratingSpectrogram: 'Generant espectre...',
   coverDropzoneSpectrogramTitle: "Generar i incrustar espectrograma d'àudio",
+  coverDropzoneMinimize: 'Minimitzar caràtula',
+  coverDropzoneExpand: 'Estudi de caràtula',
+  coverDropzonePaletteLabel: 'Paleta de color',
 };
 
 const en: Translations = {
@@ -684,6 +693,9 @@ const en: Translations = {
   coverDropzoneSpectrogramBtn: 'Spectrum',
   coverDropzoneGeneratingSpectrogram: 'Generating spectrum...',
   coverDropzoneSpectrogramTitle: 'Generate and embed audio spectrogram',
+  coverDropzoneMinimize: 'Minimize cover',
+  coverDropzoneExpand: 'Cover studio',
+  coverDropzonePaletteLabel: 'Color palette',
 };
 
 const dictionaries: Record<Language, Translations> = { es, ca, en };

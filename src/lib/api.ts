@@ -186,12 +186,14 @@ export async function stopPreview(): Promise<void> {
 
 export async function generateTrackSpectrogram(
   track: Track,
+  palette?: string,
   youtubeCookies?: string,
   cookiesFromBrowser?: string
 ): Promise<string> {
   try {
     return await invoke<string>('generate_track_spectrogram', {
       track,
+      palette: palette || null,
       youtubeCookies: youtubeCookies || null,
       cookiesFromBrowser: cookiesFromBrowser || null,
     });

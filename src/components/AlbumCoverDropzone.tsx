@@ -8,6 +8,8 @@ import {
   RefreshCw,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   Activity,
 } from 'lucide-react';
 import { useI18n } from '../lib/i18n';
@@ -27,7 +29,7 @@ interface AlbumCoverDropzoneProps {
   onToggleApplyToAll?: (applyToAll: boolean) => void;
   onPrevTrack?: () => void;
   onNextTrack?: () => void;
-  onGenerateSpectrogram?: () => Promise<void>;
+  onGenerateSpectrogram?: (palette: string) => Promise<void>;
   spectrogramProgress?: { current: number; total: number } | null;
 }
 
@@ -49,6 +51,8 @@ export default function AlbumCoverDropzone({
   spectrogramProgress,
 }: AlbumCoverDropzoneProps) {
   const { t } = useI18n();
+  const [isCollapsed, setIsCollapsed] = useState(true);
+  const [spectrogramPalette, setSpectrogramPalette] = useState('magma');
   const [isDragging, setIsDragging] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
@@ -60,7 +64,7 @@ export default function AlbumCoverDropzone({
     if (!onGenerateSpectrogram || isGeneratingSpectrogram || disabled) return;
     setIsGeneratingSpectrogram(true);
     try {
-      await onGenerateSpectrogram();
+      await onGenerateSpectrogram(spectrogramPalette);
     } finally {
       setIsGeneratingSpectrogram(false);
     }
@@ -150,6 +154,57 @@ export default function AlbumCoverDropzone({
 
   const hasMultipleTracks = totalTracks > 1;
 
+  if (isCollapsed) {
+    return (
+      <div
+        onClick={() => setIsCollapsed(false)}
+        className="w-full mb-3 bg-charcoal/80 hover:bg-charcoal/95 border border-olive/50 hover:border-gold/60 rounded-xl px-3.5 py-2.5 flex items-center justify-between gap-3 cursor-pointer transition-all duration-200 shadow-sm group select-none"
+      >
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          {currentCover ? (
+            <img
+              src={currentCover}
+              alt=""
+              className="w-9 h-9 rounded object-cover border border-olive/50 shrink-0 shadow-sm group-hover:scale-105 transition-transform"
+            />
+          ) : (
+            <div className="w-9 h-9 rounded bg-charcoal flex items-center justify-center border border-olive/40 shrink-0">
+              <Image className="w-4 h-4 text-cream/40" />
+            </div>
+          )}
+
+          <div className="min-w-0 flex flex-col">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-cream truncate uppercase tracking-wider">
+                {trackTitle || t.coverDropzoneTitle}
+              </span>
+              {isCustom && (
+                <span className="text-[9px] px-1.5 py-0.2 rounded bg-gold/20 text-gold border border-gold/40 uppercase tracking-widest font-bold shrink-0">
+                  {t.coverDropzoneCustomBadge}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-cream/60 truncate">
+              {trackArtist && <span>{trackArtist}</span>}
+              {hasMultipleTracks && (
+                <span className="text-olive/80 font-mono">
+                  • {t.coverDropzoneTrackIndicator(selectedTrackIndex + 1, totalTracks)}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 text-xs text-gold/90 group-hover:text-gold font-semibold uppercase tracking-wider bg-olive/20 group-hover:bg-olive/40 px-2.5 py-1.5 rounded-md border border-olive/30 transition-all">
+            <span>{t.coverDropzoneExpand}</span>
+            <ChevronDown className="w-4 h-4 text-gold group-hover:translate-y-0.5 transition-transform" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       onClick={handleContainerClick}
@@ -196,50 +251,65 @@ export default function AlbumCoverDropzone({
 
         {/* Info & Call-to-action */}
         <div className="flex-1 min-w-0 text-center sm:text-left">
-          {/* Header Row: Title, Track Navigator & Badges */}
-          <div className="flex items-center justify-center sm:justify-start gap-2 mb-1.5 flex-wrap">
-            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-cream">
-              {t.coverDropzoneTitle}
-            </span>
+          {/* Header Row: Title, Track Navigator, Badges & Minimize button */}
+          <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-cream">
+                {t.coverDropzoneTitle}
+              </span>
 
-            {/* Track Selector Navigator (if multiple tracks) */}
-            {hasMultipleTracks && (
-              <div
-                onClick={e => e.stopPropagation()}
-                className="flex items-center gap-1 bg-charcoal px-2 py-0.5 rounded-full border border-olive/40"
-              >
-                <button
-                  type="button"
-                  onClick={onPrevTrack}
-                  title="Pista anterior"
-                  className="hover:text-gold text-cream/70 transition-colors p-0.5 cursor-pointer"
+              {/* Track Selector Navigator (if multiple tracks) */}
+              {hasMultipleTracks && (
+                <div
+                  onClick={e => e.stopPropagation()}
+                  className="flex items-center gap-1 bg-charcoal px-2 py-0.5 rounded-full border border-olive/40"
                 >
-                  <ChevronLeft className="w-3.5 h-3.5" />
-                </button>
-                <span className="text-[11px] font-mono text-cream font-medium px-1">
-                  {t.coverDropzoneTrackIndicator(selectedTrackIndex + 1, totalTracks)}
+                  <button
+                    type="button"
+                    onClick={onPrevTrack}
+                    title="Pista anterior"
+                    className="hover:text-gold text-cream/70 transition-colors p-0.5 cursor-pointer"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="text-[11px] font-mono text-cream font-medium px-1">
+                    {t.coverDropzoneTrackIndicator(selectedTrackIndex + 1, totalTracks)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onNextTrack}
+                    title="Siguiente pista"
+                    className="hover:text-gold text-cream/70 transition-colors p-0.5 cursor-pointer"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* Custom vs Default Badge */}
+              {isCustom ? (
+                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-gold/20 text-gold border border-gold/40">
+                  {t.coverDropzoneCustomBadge}
                 </span>
-                <button
-                  type="button"
-                  onClick={onNextTrack}
-                  title="Siguiente pista"
-                  className="hover:text-gold text-cream/70 transition-colors p-0.5 cursor-pointer"
-                >
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
+              ) : (
+                <span className="text-[10px] uppercase font-medium px-2 py-0.5 rounded-full bg-olive/30 text-cream/70 border border-olive/40">
+                  {t.coverDropzoneDefaultBadge}
+                </span>
+              )}
+            </div>
 
-            {/* Custom vs Default Badge */}
-            {isCustom ? (
-              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-gold/20 text-gold border border-gold/40">
-                {t.coverDropzoneCustomBadge}
-              </span>
-            ) : (
-              <span className="text-[10px] uppercase font-medium px-2 py-0.5 rounded-full bg-olive/30 text-cream/70 border border-olive/40">
-                {t.coverDropzoneDefaultBadge}
-              </span>
-            )}
+            <button
+              type="button"
+              onClick={e => {
+                e.stopPropagation();
+                setIsCollapsed(true);
+              }}
+              className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-cream/70 hover:text-gold bg-charcoal/80 hover:bg-charcoal border border-olive/40 rounded transition-colors cursor-pointer"
+              title={t.coverDropzoneMinimize}
+            >
+              <span>{t.coverDropzoneMinimize}</span>
+              <ChevronUp className="w-3.5 h-3.5" />
+            </button>
           </div>
 
           {/* Active track title & artist */}
@@ -295,28 +365,57 @@ export default function AlbumCoverDropzone({
               </button>
             )}
 
-            {/* Generate & embed audio spectrogram button (discreet) */}
+            {/* Generate & embed audio spectrogram button with palette selector */}
             {onGenerateSpectrogram && (
-              <button
-                type="button"
-                onClick={handleSpectrogramClick}
-                disabled={disabled || isGeneratingSpectrogram}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider rounded-md bg-charcoal/80 hover:bg-rust/20 text-cream/90 border border-olive/50 hover:border-rust transition-all cursor-pointer disabled:opacity-50"
-                title={t.coverDropzoneSpectrogramTitle}
+              <div
+                onClick={e => e.stopPropagation()}
+                className="flex items-center rounded-md border border-olive/50 bg-charcoal/80 overflow-hidden focus-within:border-gold hover:border-rust transition-colors"
               >
-                {isGeneratingSpectrogram ? (
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-rust" />
-                ) : (
-                  <Activity className="w-3.5 h-3.5 text-rust" />
-                )}
-                <span>
-                  {isGeneratingSpectrogram
-                    ? spectrogramProgress
-                      ? `${t.coverDropzoneGeneratingSpectrogram} (${spectrogramProgress.current}/${spectrogramProgress.total})`
-                      : t.coverDropzoneGeneratingSpectrogram
-                    : t.coverDropzoneSpectrogramBtn}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={handleSpectrogramClick}
+                  disabled={disabled || isGeneratingSpectrogram}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-cream/90 hover:bg-rust/20 border-r border-olive/40 transition-all cursor-pointer disabled:opacity-50"
+                  title={t.coverDropzoneSpectrogramTitle}
+                >
+                  {isGeneratingSpectrogram ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-rust" />
+                  ) : (
+                    <Activity className="w-3.5 h-3.5 text-rust" />
+                  )}
+                  <span>
+                    {isGeneratingSpectrogram
+                      ? spectrogramProgress
+                        ? `${t.coverDropzoneGeneratingSpectrogram} (${spectrogramProgress.current}/${spectrogramProgress.total})`
+                        : t.coverDropzoneGeneratingSpectrogram
+                      : t.coverDropzoneSpectrogramBtn}
+                  </span>
+                </button>
+
+                <select
+                  value={spectrogramPalette}
+                  onChange={e => setSpectrogramPalette(e.target.value)}
+                  disabled={disabled || isGeneratingSpectrogram}
+                  className="bg-charcoal text-[11px] text-cream/90 font-mono py-1.5 px-2 pr-3 outline-none cursor-pointer hover:text-gold transition-colors uppercase"
+                  title={t.coverDropzonePaletteLabel}
+                >
+                  <option value="magma">Magma</option>
+                  <option value="fire">Fire</option>
+                  <option value="plasma">Plasma</option>
+                  <option value="viridis">Viridis</option>
+                  <option value="rainbow">Rainbow</option>
+                  <option value="nebulae">Nebulae</option>
+                  <option value="cool">Cool</option>
+                  <option value="green">Green</option>
+                  <option value="cividis">Cividis</option>
+                  <option value="fruit">Fruit</option>
+                  <option value="fiery">Fiery</option>
+                  <option value="moreland">Moreland</option>
+                  <option value="terrain">Terrain</option>
+                  <option value="intensity">Intensity</option>
+                  <option value="channel">Channel</option>
+                </select>
+              </div>
             )}
 
             {isCustom && (
