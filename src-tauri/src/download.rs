@@ -1,14 +1,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tokio::fs;
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
+use crate::cancel::DownloadRegistry;
 use crate::error::{AppError, AppResult};
 use crate::models::Track;
 use crate::settings;
+use crate::youtube;
 
 const BATCH_CONCURRENCY: usize = 6;
 
@@ -47,10 +50,55 @@ pub struct DownloadOptions {
 fn resolve_naming_template(pattern: &str) -> &str {
     match pattern {
         "number_artist_title" => "{trackNumber} - {artist} - {title}",
+        "number_title" => "{trackNumber} - {title}",
         "artist_title" => "{artist} - {title}",
         "title_artist" => "{title} - {artist}",
         "title" => "{title}",
         other => other,
+    }
+}
+
+fn resolve_folder_naming_template(pattern: &str) -> &str {
+    match pattern {
+        "year_album" => "{year} - {album}",
+        "album" => "{album}",
+        _ => "{album} - {artist}",
+    }
+}
+
+fn render_folder_name(
+    pattern: &str,
+    album: &str,
+    artist: &str,
+    year: &str,
+    default: &str,
+) -> String {
+    let template = resolve_folder_naming_template(pattern);
+
+    let rendered = template
+        .replace("{album}", album.trim())
+        .replace("{artist}", artist.trim())
+        .replace("{year}", year.trim());
+
+    let mut clean_rendered = rendered;
+    loop {
+        let trimmed_once = clean_rendered.trim();
+        let stripped = trimmed_once
+            .trim_start_matches('-')
+            .trim_start()
+            .trim_end_matches('-')
+            .trim_end();
+        if stripped == trimmed_once {
+            clean_rendered = trimmed_once.to_string();
+            break;
+        }
+        clean_rendered = stripped.to_string();
+    }
+
+    if clean_rendered.is_empty() {
+        sanitize_path_component(default, "Unknown Album")
+    } else {
+        sanitize_path_component(&clean_rendered, default)
     }
 }
 
@@ -120,17 +168,34 @@ async fn run_yt_dlp_streaming(
     track_id: &str,
     cmd: tauri_plugin_shell::process::Command,
     stream_labels: &'static [&'static str],
+    registry: &DownloadRegistry,
+    token: &CancellationToken,
 ) -> AppResult<(String, Option<i32>)> {
-    let (mut rx, _child) = cmd
+    if token.is_cancelled() {
+        return Err(AppError::Cancelled);
+    }
+
+    let (mut rx, child) = cmd
         .spawn()
         .map_err(|e| AppError::YtDlpFailed(format!("failed to spawn yt-dlp sidecar: {e}")))?;
+    registry.set_child(track_id, child);
 
     let mut stderr = String::new();
     let mut exit_code: Option<i32> = None;
     let mut legs_started: usize = 0;
     let mut emitted_transcoding = false;
 
-    while let Some(event) = rx.recv().await {
+    loop {
+        let event = tokio::select! {
+            _ = token.cancelled() => {
+                registry.clear_child(track_id);
+                return Err(AppError::Cancelled);
+            }
+            event = rx.recv() => match event {
+                Some(event) => event,
+                None => break,
+            },
+        };
         match event {
             CommandEvent::Stdout(bytes) => {
                 let line = String::from_utf8_lossy(&bytes);
@@ -173,6 +238,7 @@ async fn run_yt_dlp_streaming(
                 stderr.push('\n');
             }
             CommandEvent::Error(e) => {
+                registry.clear_child(track_id);
                 return Err(AppError::YtDlpFailed(format!("yt-dlp process error: {e}")));
             }
             CommandEvent::Terminated(payload) => {
@@ -182,6 +248,7 @@ async fn run_yt_dlp_streaming(
         }
     }
 
+    registry.clear_child(track_id);
     Ok((stderr, exit_code))
 }
 
@@ -209,6 +276,8 @@ async fn download_audio(
     video_url: &str,
     work_dir: &Path,
     cookies: CookieAuth<'_>,
+    registry: &DownloadRegistry,
+    token: &CancellationToken,
 ) -> AppResult<PathBuf> {
     let out_template = work_dir.join("audio.%(ext)s");
     let mut cmd = app
@@ -238,7 +307,8 @@ async fn download_audio(
     args.push(video_url.to_string());
     cmd = cmd.args(args);
 
-    let (stderr, exit_code) = run_yt_dlp_streaming(app, track_id, cmd, &["audio"]).await?;
+    let (stderr, exit_code) =
+        run_yt_dlp_streaming(app, track_id, cmd, &["audio"], registry, token).await?;
 
     if exit_code != Some(0) {
         eprintln!("[yt-dlp stderr]\n{stderr}");
@@ -268,6 +338,8 @@ async fn download_video(
     container: &str,
     quality: Option<&str>,
     cookies: CookieAuth<'_>,
+    registry: &DownloadRegistry,
+    token: &CancellationToken,
 ) -> AppResult<PathBuf> {
     let out_template = work_dir.join("video.%(ext)s");
 
@@ -279,6 +351,8 @@ async fn download_video(
     let height_cap = quality
         .map(str::trim)
         .filter(|q| !q.is_empty() && !q.eq_ignore_ascii_case("best"))
+        .map(|q| q.trim_end_matches(|c: char| !c.is_ascii_digit()))
+        .filter(|q| !q.is_empty())
         .and_then(|q| q.parse::<u32>().ok());
 
     let format_selector = match height_cap {
@@ -289,6 +363,8 @@ async fn download_video(
     let mut args: Vec<String> = vec![
         "-f".into(),
         format_selector,
+        "--extractor-args".into(),
+        "youtube:player_client=web_embedded,tv".into(),
         "--merge-output-format".into(),
         container.to_string(),
         "-N".into(),
@@ -305,7 +381,8 @@ async fn download_video(
     args.push(video_url.to_string());
     cmd = cmd.args(args);
 
-    let (stderr, exit_code) = run_yt_dlp_streaming(app, track_id, cmd, &["video", "audio"]).await?;
+    let (stderr, exit_code) =
+        run_yt_dlp_streaming(app, track_id, cmd, &["video", "audio"], registry, token).await?;
 
     if exit_code != Some(0) {
         if is_bot_detected(&stderr) {
@@ -333,11 +410,7 @@ async fn download_cover(cover_url: &str, work_dir: &Path) -> Option<PathBuf> {
     if cover_url.is_empty() {
         return None;
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .pool_max_idle_per_host(2)
-        .build()
-        .ok()?;
+    let client = crate::http::client();
     let res = client
         .get(cover_url)
         .header(reqwest::header::ACCEPT, "image/*,*/*;q=0.8")
@@ -602,22 +675,60 @@ fn build_ffmpeg_video_args(
     args
 }
 
-async fn run_ffmpeg(app: &AppHandle, args: &[String]) -> AppResult<()> {
+async fn run_ffmpeg(
+    app: &AppHandle,
+    track_id: &str,
+    args: &[String],
+    registry: &DownloadRegistry,
+    token: &CancellationToken,
+) -> AppResult<()> {
+    if token.is_cancelled() {
+        return Err(AppError::Cancelled);
+    }
+
     let sidecar = app
         .shell()
         .sidecar("sonic-ffmpeg")
         .map_err(|e| AppError::FfmpegFailed(format!("failed to resolve ffmpeg sidecar: {e}")))?;
 
-    let output = sidecar
+    let (mut rx, child) = sidecar
         .args(args)
-        .output()
-        .await
+        .spawn()
         .map_err(|e| AppError::FfmpegFailed(format!("failed to spawn ffmpeg sidecar: {e}")))?;
+    registry.set_child(track_id, child);
 
-    if !output.status.success() {
-        return Err(AppError::FfmpegFailed(
-            String::from_utf8_lossy(&output.stderr).to_string(),
-        ));
+    let mut stderr = String::new();
+    let mut exit_code: Option<i32> = None;
+
+    loop {
+        let event = tokio::select! {
+            _ = token.cancelled() => {
+                registry.clear_child(track_id);
+                return Err(AppError::Cancelled);
+            }
+            event = rx.recv() => match event {
+                Some(event) => event,
+                None => break,
+            },
+        };
+        match event {
+            CommandEvent::Stderr(bytes) => {
+                stderr.push_str(&String::from_utf8_lossy(&bytes));
+            }
+            CommandEvent::Terminated(payload) => {
+                exit_code = payload.code;
+            }
+            CommandEvent::Error(e) => {
+                registry.clear_child(track_id);
+                return Err(AppError::FfmpegFailed(format!("ffmpeg process error: {e}")));
+            }
+            _ => {}
+        }
+    }
+
+    registry.clear_child(track_id);
+    if exit_code != Some(0) {
+        return Err(AppError::FfmpegFailed(stderr));
     }
     Ok(())
 }
@@ -641,7 +752,13 @@ async fn run_pipeline(
     track: &Track,
     dest_folder: &Path,
     opts: &DownloadOptions,
+    registry: &DownloadRegistry,
+    token: &CancellationToken,
 ) -> AppResult<PathBuf> {
+    if token.is_cancelled() {
+        return Err(AppError::Cancelled);
+    }
+
     let preview_url = track
         .preview_url
         .as_deref()
@@ -666,17 +783,20 @@ async fn run_pipeline(
             dest_folder,
             opts,
             cookies_file_path.as_deref(),
+            registry,
+            token,
         )
         .await
     } else {
         run_audio_pipeline(
             app,
             track,
-            preview_url,
             work_dir.path(),
             dest_folder,
             opts,
             cookies_file_path.as_deref(),
+            registry,
+            token,
         )
         .await
     }
@@ -685,12 +805,54 @@ async fn run_pipeline(
 async fn run_audio_pipeline(
     app: &AppHandle,
     track: &Track,
-    preview_url: &str,
     work_dir: &Path,
     dest_folder: &Path,
     opts: &DownloadOptions,
     cookies_file_path: Option<&str>,
+    registry: &DownloadRegistry,
+    token: &CancellationToken,
 ) -> AppResult<PathBuf> {
+    // If nothing validates, fail the download, a "track not found" is a better outcome than a
+    // track tagged with the wrong audio.
+    let music_match = youtube::find_validated_audio_match(
+        app,
+        &track.title,
+        &track.artist,
+        Some(track.duration),
+        &track.album,
+    )
+    .await
+    .ok_or_else(|| AppError::TrackNotFound {
+        title: track.title.clone(),
+        artist: track.artist.clone(),
+    })?;
+    let audio_source_url = music_match.url.clone();
+
+    let mut track = track.clone();
+    if track.album.is_empty() {
+        if let Some(meta) = youtube::fetch_music_metadata(app, &music_match.video_id).await {
+            if track.cover_url.is_empty() {
+                if let Some(cover) = meta.cover_url {
+                    track.cover_url = cover;
+                }
+            }
+            if track.year.is_empty() {
+                if let Some(year) = meta.year {
+                    track.year = year;
+                }
+            }
+            if let Some(album) = meta.album {
+                track.album = album;
+            }
+            if track.album_artist.is_none() {
+                if let Some(album_artist) = meta.album_artist {
+                    track.album_artist = Some(album_artist);
+                }
+            }
+        }
+    }
+    let track = &track;
+
     let cover_url = track.cover_url.clone();
     let cover_dir = work_dir.to_path_buf();
     let cover_handle = tokio::spawn(async move { download_cover(&cover_url, &cover_dir).await });
@@ -698,12 +860,14 @@ async fn run_audio_pipeline(
     let audio_path = download_audio(
         app,
         &track.id,
-        preview_url,
+        &audio_source_url,
         work_dir,
         CookieAuth {
             cookies_path: cookies_file_path,
             cookies_from_browser: opts.cookies_from_browser.as_deref(),
         },
+        registry,
+        token,
     )
     .await?;
     let cover_path = cover_handle.await.ok().flatten();
@@ -731,7 +895,15 @@ async fn run_audio_pipeline(
         opts,
     )
     .await?;
-    run_ffmpeg(app, &args).await?;
+    if let Err(e) = run_ffmpeg(app, &track.id, &args, registry, token).await {
+        // Unlike the yt-dlp stage, ffmpeg writes straight into the real
+        // destination folder, so a kill mid-transcode can leave a truncated file behind,
+        // delete it so cancelling never leaves a broken track in the library.
+        if matches!(e, AppError::Cancelled) {
+            let _ = fs::remove_file(&out_path).await;
+        }
+        return Err(e);
+    }
 
     Ok(out_path)
 }
@@ -744,6 +916,8 @@ async fn run_video_pipeline(
     dest_folder: &Path,
     opts: &DownloadOptions,
     cookies_file_path: Option<&str>,
+    registry: &DownloadRegistry,
+    token: &CancellationToken,
 ) -> AppResult<PathBuf> {
     let container = video_container_extension(&opts.format);
     let video_path = download_video(
@@ -757,6 +931,8 @@ async fn run_video_pipeline(
             cookies_path: cookies_file_path,
             cookies_from_browser: opts.cookies_from_browser.as_deref(),
         },
+        registry,
+        token,
     )
     .await?;
 
@@ -775,7 +951,12 @@ async fn run_video_pipeline(
     );
 
     let args = build_ffmpeg_video_args(&video_path, &out_path, track, opts);
-    run_ffmpeg(app, &args).await?;
+    if let Err(e) = run_ffmpeg(app, &track.id, &args, registry, token).await {
+        if matches!(e, AppError::Cancelled) {
+            let _ = fs::remove_file(&out_path).await;
+        }
+        return Err(e);
+    }
 
     Ok(out_path)
 }
@@ -793,11 +974,48 @@ pub async fn download_track(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        Some(name) => base_folder.join(sanitize_path_component(name, "Untitled")),
+        Some(fallback_name) => {
+            if opts.is_album {
+                let pattern = opts
+                    .folder_naming_pattern
+                    .as_deref()
+                    .filter(|p| !p.trim().is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(default_folder_naming_pattern);
+
+                let album = opts
+                    .album_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&track.album);
+
+                let year = if track.year.trim().is_empty() {
+                    "Unknown Year"
+                } else {
+                    track.year.trim()
+                };
+
+                let folder_name =
+                    render_folder_name(&pattern, album, &track.artist, year, fallback_name);
+                base_folder.join(folder_name)
+            } else {
+                base_folder.join(sanitize_path_component(fallback_name, "playlist"))
+            }
+        }
         None => base_folder,
     };
     let options = opts.into_download_options();
-    let path = run_pipeline(&app, &track, &dest_folder, &options).await?;
+
+    youtube::set_youtube_cookies(options.youtube_cookies.clone());
+    youtube::set_cookies_from_browser(options.cookies_from_browser.clone());
+
+    let registry = app.state::<DownloadRegistry>();
+    let token = registry.begin_track(&track.id);
+    let result = run_pipeline(&app, &track, &dest_folder, &options, &registry, &token).await;
+    registry.end_track(&track.id);
+
+    let path = result?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -814,6 +1032,12 @@ pub struct DownloadTrackArgs {
     pub embed_id3_tags: bool,
     #[serde(default)]
     pub album_folder: Option<String>,
+    #[serde(default)]
+    pub folder_naming_pattern: Option<String>,
+    #[serde(default)]
+    pub is_album: bool,
+    #[serde(default)]
+    pub album_name: Option<String>,
 }
 
 impl DownloadTrackArgs {
@@ -848,6 +1072,14 @@ pub struct DownloadBatchArgs {
     pub skip_missing_tracks: bool,
     pub naming_pattern: String,
     pub embed_id3_tags: bool,
+    #[serde(default = "default_folder_naming_pattern")]
+    pub folder_naming_pattern: String,
+    #[serde(default)]
+    pub is_album: bool,
+}
+
+fn default_folder_naming_pattern() -> String {
+    "album_artist".to_string()
 }
 
 #[tauri::command]
@@ -859,10 +1091,71 @@ pub async fn download_batch(
     if tracks.is_empty() {
         return Err(AppError::Other("No tracks to download.".to_string()));
     }
+    let registry = app.state::<DownloadRegistry>();
     let base_folder = settings::require_download_folder(&app).await?;
 
-    let collection_name = sanitize_path_component(&args.playlist_name, "playlist");
+    let collection_display_name = if args.is_album {
+        let mut clean_playlist_name = args.playlist_name.trim().to_string();
+        for prefix in &["Album - ", "album - ", "Playlist - ", "playlist - "] {
+            if clean_playlist_name.starts_with(prefix) {
+                clean_playlist_name = clean_playlist_name
+                    .strip_prefix(prefix)
+                    .unwrap()
+                    .trim()
+                    .to_string();
+            }
+        }
+
+        let album_title = tracks
+            .iter()
+            .find_map(|t| {
+                let a = t.album.trim();
+                (!a.is_empty()).then(|| a.to_string())
+            })
+            .unwrap_or(clean_playlist_name.clone());
+
+        let album_artist = tracks
+            .iter()
+            .find_map(|t| {
+                let a = t.album_artist.as_deref().unwrap_or_default().trim();
+                (!a.is_empty()).then(|| a.to_string())
+            })
+            .or_else(|| {
+                tracks.iter().find_map(|t| {
+                    let a = t.artist.trim();
+                    (!a.is_empty()).then(|| a.to_string())
+                })
+            })
+            .unwrap_or_default();
+
+        let year = tracks
+            .iter()
+            .find_map(|t| {
+                let y = t.year.trim();
+                (!y.is_empty()).then(|| y.to_string())
+            })
+            .unwrap_or_default();
+
+        render_folder_name(
+            &args.folder_naming_pattern,
+            &album_title,
+            &album_artist,
+            &year,
+            &album_title,
+        )
+    } else {
+        let mut clean_name = args.playlist_name.trim().to_string();
+        if clean_name.starts_with("Playlist - ") || clean_name.starts_with("playlist - ") {
+            clean_name = clean_name[11..].trim().to_string();
+        }
+        clean_name
+    };
+
+    let collection_name = sanitize_path_component(&collection_display_name, "playlist");
     let save_in_folder = args.save_in_folder.unwrap_or(false);
+
+    youtube::set_youtube_cookies(args.youtube_cookies.clone());
+    youtube::set_cookies_from_browser(args.cookies_from_browser.clone());
 
     let options = Arc::new(DownloadOptions {
         format: args.format.clone(),
@@ -911,13 +1204,24 @@ pub async fn download_batch(
             });
         }
 
+        // Registered up front, before the track even waits on a
+        // concurrency permit, so cancel_batch/cancel_download can reach
+        // a still-queued track — not just one that's already running.
+        let token = registry.begin_track(&track.id);
+
         let sem = semaphore.clone();
         let opts = options.clone();
         let dest = batch_dir_path.clone();
         let app_handle = app.clone();
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore closed");
-            let result = run_pipeline(&app_handle, &track, &dest, &opts).await;
+            let registry = app_handle.state::<DownloadRegistry>();
+            let result = if token.is_cancelled() {
+                Err(AppError::Cancelled)
+            } else {
+                run_pipeline(&app_handle, &track, &dest, &opts, &registry, &token).await
+            };
+            registry.end_track(&track.id);
             (track, result)
         }));
     }
@@ -934,6 +1238,12 @@ pub async fn download_batch(
         }
     }
 
+    if failures
+        .iter()
+        .any(|(_, e)| matches!(e, AppError::Cancelled))
+    {
+        return Err(AppError::Cancelled);
+    }
     if output_entries.is_empty() {
         let reason = failures
             .into_iter()

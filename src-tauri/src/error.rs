@@ -7,11 +7,13 @@ pub enum AppError {
     Forbidden,
     TrackNotFound { title: String, artist: String },
     SpotifyParseFailed(String),
+    UnsupportedLink(String),
     Network(String),
     YtDlpFailed(String),
     FfmpegFailed(String),
     Io(String),
     Other(String),
+    Cancelled,
 }
 
 impl fmt::Display for AppError {
@@ -28,6 +30,7 @@ impl fmt::Display for AppError {
                 )
             }
             AppError::SpotifyParseFailed(msg) => write!(f, "Failed to parse Spotify URL: {msg}"),
+            AppError::UnsupportedLink(msg) => write!(f, "{msg}"),
             AppError::Network(msg) => write!(f, "Network error: {msg}"),
             AppError::Forbidden => write!(
                 f,
@@ -37,6 +40,7 @@ impl fmt::Display for AppError {
             AppError::FfmpegFailed(msg) => write!(f, "ffmpeg failed: {msg}"),
             AppError::Io(msg) => write!(f, "I/O error: {msg}"),
             AppError::Other(msg) => write!(f, "{msg}"),
+            AppError::Cancelled => write!(f, "Cancelled."),
         }
     }
 }
@@ -74,6 +78,8 @@ impl AppError {
             AppError::YoutubeBotDetected => Some("YOUTUBE_BOT_DETECTED"),
             AppError::TrackNotFound { .. } => Some("TRACK_NOT_FOUND"),
             AppError::Forbidden => Some("FORBIDDEN"),
+            AppError::UnsupportedLink(_) => Some("UNSUPPORTED_LINK"),
+            AppError::Cancelled => Some("CANCELLED"),
             _ => None,
         }
     }

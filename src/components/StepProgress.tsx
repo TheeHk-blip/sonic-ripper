@@ -54,7 +54,7 @@ export default function StepProgress({ current }: StepProgressProps) {
               <div className="hidden sm:block">
                 <p
                   className={`font-thin transition-colors duration-300 ${
-                    isActive ? 'text-olive text-lg' : isDone ? 'text-rust' : 'text-cream'
+                    isActive ? 'text-gold text-lg' : isDone ? 'text-rust' : 'text-cream'
                   }`}
                 >
                   {s.label}

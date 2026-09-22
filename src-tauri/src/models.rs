@@ -8,6 +8,8 @@ pub struct Track {
     pub artist: String,
     pub album: String,
     #[serde(default)]
+    pub album_artist: Option<String>,
+    #[serde(default)]
     pub year: String,
     pub track_number: u32,
     pub total_tracks: u32,
@@ -23,7 +25,7 @@ pub struct Track {
 pub enum AnalyzeResult {
     #[serde(rename = "track")]
     Track { track: Track },
-    #[serde(rename = "playlist")]
+    #[serde(rename = "playlist", rename_all = "camelCase")]
     Playlist {
         playlist_name: String,
         is_album: bool,
@@ -36,6 +38,7 @@ pub struct ScrapedTrackItem {
     pub title: String,
     pub artist: String,
     pub album: Option<String>,
+    pub album_artist: Option<String>,
     pub duration: Option<u32>,
     pub cover_url: Option<String>,
     #[allow(dead_code)]

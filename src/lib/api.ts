@@ -36,6 +36,8 @@ export async function analyzeSpotify(url: string): Promise<AnalyzeResponse> {
 
 export interface AppSettings {
   downloadFolder: string | null;
+  youtubeCookies?: string | null;
+  cookiesFromBrowser?: string | null;
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -70,6 +72,9 @@ export interface DownloadOptions {
   namingPattern: string;
   embedId3Tags: boolean;
   albumFolder?: string;
+  albumName?: string;
+  folderNamingPattern?: string;
+  isAlbum?: boolean;
 }
 
 export async function downloadTrack(track: Track, opts: DownloadOptions): Promise<string> {
@@ -84,6 +89,7 @@ export interface DownloadBatchOptions extends DownloadOptions {
   playlistName: string;
   saveInFolder?: boolean;
   skipMissingTracks?: boolean;
+  isAlbum: boolean;
 }
 
 export async function downloadBatch(tracks: Track[], opts: DownloadBatchOptions): Promise<string> {
@@ -117,6 +123,38 @@ export async function startPreview(
 export async function stopPreview(): Promise<void> {
   try {
     await invoke('stop_preview');
+  } catch (err) {
+    throw toError(err);
+  }
+}
+
+export async function cancelDownload(trackId: string): Promise<boolean> {
+  try {
+    return await invoke<boolean>('cancel_download', { trackId });
+  } catch (err) {
+    throw toError(err);
+  }
+}
+
+export async function cancelBatch(trackIds: string[]): Promise<number> {
+  try {
+    return await invoke<number>('cancel_batch', { trackIds });
+  } catch (err) {
+    throw toError(err);
+  }
+}
+
+export async function setYoutubeCookies(cookies?: string | null): Promise<AppSettings> {
+  try {
+    return await invoke<AppSettings>('set_youtube_cookies', { cookies: cookies || null });
+  } catch (err) {
+    throw toError(err);
+  }
+}
+
+export async function setYoutubeCookiesFromBrowser(browser?: string | null): Promise<AppSettings> {
+  try {
+    return await invoke<AppSettings>('set_cookies_from_browser', { browser: browser || null });
   } catch (err) {
     throw toError(err);
   }

@@ -15,23 +15,31 @@ import {
 import SettingsPanel from './components/SettingsPanel';
 import MediaPlayer from './components/MediaPlayer';
 import StepProgress, { FlowStep } from './components/StepProgress';
-import { Track, DownloadSettings } from './types';
+import { Track, DownloadSettings, getErrorCode, isAppErrorPayload } from './types';
 import { listen } from '@tauri-apps/api/event';
 import {
   analyzeSpotify as analyzeLink,
   downloadTrack,
   downloadBatch,
+  cancelDownload,
+  cancelBatch,
   getSettings,
   pickDownloadFolder,
+  setYoutubeCookies,
+  setYoutubeCookiesFromBrowser,
 } from './lib/api';
 import { useVirtualizer } from './lib/useVirtualizer';
 import TrackRow from './components/TrackRow';
 import TrackListHeader from './components/TrackListHeader';
+import { SpotifyPathfinderSettings } from './components/PathFinderSettings';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function friendlyError(err: any): string {
-  const code = err?.code as string | undefined;
-  const raw = String(err?.message ?? err?.error ?? err ?? '');
+function friendlyError(err: unknown): string {
+  const code = getErrorCode(err);
+  const raw = isAppErrorPayload(err)
+    ? err.error
+    : err instanceof Error
+      ? err.message
+      : String(err ?? '');
 
   if (code === 'YOUTUBE_BOT_DETECTED') {
     return 'YouTube blocked this as a bot check. Try turning on cookies (browser profile or pasted) in Settings, then retry.';
@@ -41,6 +49,9 @@ function friendlyError(err: any): string {
   }
   if (code === 'FORBIDDEN') {
     return "You're not authenticated. Extract cookies or paste in settings";
+  }
+  if (code === 'UNSUPPORTED_LINK') {
+    return raw;
   }
   if (raw.includes('No download folder is set')) {
     return 'Choose a download folder in Settings before downloading.';
@@ -60,10 +71,28 @@ function friendlyError(err: any): string {
   return 'Something wrong happened. Try again';
 }
 
+const PROGRESS_PHASE_ORDER: Record<string, number> = {
+  downloading: 0,
+  transcoding: 1,
+  tagging: 2,
+};
+
+function overallTrackProgress(status: string, percent: number): number {
+  if (status === 'completed') return 100;
+  const phaseIndex = PROGRESS_PHASE_ORDER[status];
+  if (phaseIndex === undefined) return percent;
+  const phaseSpan = 100 / 3;
+  return Math.min(100, phaseIndex * phaseSpan + (percent / 100) * phaseSpan);
+}
+
 export default function App() {
   const [step, setStep] = useState<FlowStep>('source');
   const [sourceInput, setSourceInput] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeProgress, setAnalyzeProgress] = useState<{
+    completed: number;
+    total: number;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [playlistName, setPlaylistName] = useState<string>('');
@@ -77,17 +106,25 @@ export default function App() {
     skipMissingTracks: true,
     namingPattern: 'number_artist_title',
     embedId3Tags: true,
+    folderNamingPattern: 'album_artist',
   });
   const [isBatchDownloading, setIsBatchDownloading] = useState(false);
+  const analyzePercent = useMemo(() => {
+    if (!analyzeProgress || analyzeProgress.total <= 1) return null;
+    return Math.min(100, Math.round((analyzeProgress.completed / analyzeProgress.total) * 100));
+  }, [analyzeProgress]);
+
   const batchProgress = useMemo(() => {
     if (!isBatchDownloading || tracks.length === 0) return 0;
     const avg =
-      tracks.reduce((sum, t) => sum + (t.status === 'completed' ? 100 : t.progress), 0) /
+      tracks.reduce((sum, t) => sum + overallTrackProgress(t.status, t.progress), 0) /
       tracks.length;
     return Math.round(avg);
   }, [tracks, isBatchDownloading]);
+
   const [isFolderDownloading, setIsFolderDownloading] = useState(false);
   const [folderProgressText, setFolderProgressText] = useState('');
+  const [isCancellingBatch, setIsCancellingBatch] = useState(false);
 
   const estimatedItemHeight = 110;
   const { containerRef, virtualItems, paddingTop, paddingBottom, measureElement } = useVirtualizer({
@@ -116,6 +153,48 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const unlistenPromise = listen<{ completed: number; total: number }>(
+      'analyze-progress',
+      event => {
+        setAnalyzeProgress(event.payload);
+      }
+    ).catch(err => {
+      console.error('[analyze-progress] failed to subscribe to progress events:', err);
+      return undefined;
+    });
+
+    return () => {
+      unlistenPromise.then(unlisten => unlisten?.());
+    };
+  }, []);
+
+  useEffect(() => {
+    getSettings()
+      .then(s => {
+        if (s.youtubeCookies || s.cookiesFromBrowser) {
+          setSettings(prev => ({
+            ...prev,
+            youtubeCookies: s.youtubeCookies ?? prev.youtubeCookies,
+            cookiesFromBrowser: s.cookiesFromBrowser ?? prev.cookiesFromBrowser,
+          }));
+        }
+      })
+      .catch(err => console.error('[App] failed to load persisted cookies:', err));
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setYoutubeCookies(settings.youtubeCookies).catch(err =>
+        console.error('[App] failed to sync YouTube cookies:', err)
+      );
+      setYoutubeCookiesFromBrowser(settings.cookiesFromBrowser).catch(err =>
+        console.error('[App] failed to sync cookies-from-browser:', err)
+      );
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [settings.youtubeCookies, settings.cookiesFromBrowser]);
+
   const handlePlayTrack = (track: Track) => {
     if (playingTrack?.id === track.id) {
       setPlayingTrack(null);
@@ -136,6 +215,16 @@ export default function App() {
     setTracks([]);
     setPlaylistName('');
     setIsAlbum(false);
+    setAnalyzeProgress(null);
+
+    try {
+      await Promise.all([
+        setYoutubeCookies(settings.youtubeCookies),
+        setYoutubeCookiesFromBrowser(settings.cookiesFromBrowser),
+      ]);
+    } catch (err) {
+      console.error('[App] failed to sync cookies before analyze:', err);
+    }
 
     try {
       const data = await analyzeLink(sourceInput);
@@ -198,6 +287,14 @@ export default function App() {
       );
     } catch (err) {
       console.error(`Download failed for "${trackToDownload.title}":`, err);
+      if (getErrorCode(err) === 'CANCELLED') {
+        setTracks(prev =>
+          prev.map(t =>
+            t.id === trackToDownload.id ? { ...t, status: 'cancelled', progress: 0 } : t
+          )
+        );
+        return;
+      }
       const message = friendlyError(err);
       setTracks(prev =>
         prev.map(t =>
@@ -206,6 +303,14 @@ export default function App() {
             : t
         )
       );
+    }
+  };
+
+  const handleCancelSingle = async (track: Track) => {
+    try {
+      await cancelDownload(track.id);
+    } catch (err) {
+      console.error(`Failed to cancel "${track.title}":`, err);
     }
   };
 
@@ -226,7 +331,7 @@ export default function App() {
       await downloadBatch(tracks, {
         format: settings.format,
         bitrate: settings.bitrate,
-        playlistName: playlistName || 'Playlist',
+        playlistName: playlistName,
         youtubeCookies: settings.youtubeCookies,
         cookiesFromBrowser: settings.cookiesFromBrowser,
         sampleRate: settings.sampleRate,
@@ -234,16 +339,35 @@ export default function App() {
         skipMissingTracks: settings.skipMissingTracks,
         namingPattern: settings.namingPattern || 'artist_title',
         embedId3Tags: settings.embedId3Tags !== false,
+        folderNamingPattern: isAlbum ? settings.folderNamingPattern || 'album_artist' : undefined,
+        isAlbum: isAlbum,
       });
 
       setTracks(prev => prev.map(t => ({ ...t, status: 'completed', progress: 100 })));
     } catch (err) {
       console.error('Batch download failed:', err);
-      const message = friendlyError(err);
-      setError(`Batch download failed: ${message}`);
-      setTracks(prev => prev.map(t => ({ ...t, status: 'failed', progress: 0 })));
+      if (getErrorCode(err) === 'CANCELLED') {
+        setTracks(prev =>
+          prev.map(t => (t.status === 'completed' ? t : { ...t, status: 'cancelled', progress: 0 }))
+        );
+      } else {
+        const message = friendlyError(err);
+        setError(`Batch download failed: ${message}`);
+        setTracks(prev => prev.map(t => ({ ...t, status: 'failed', progress: 0 })));
+      }
     } finally {
       setIsBatchDownloading(false);
+      setIsCancellingBatch(false);
+    }
+  };
+
+  const handleCancelBatch = async () => {
+    setIsCancellingBatch(true);
+    try {
+      await cancelBatch(tracks.map(t => t.id));
+    } catch (err) {
+      console.error('Failed to cancel batch download:', err);
+      setIsCancellingBatch(false);
     }
   };
 
@@ -267,9 +391,11 @@ export default function App() {
     const total = tracks.length;
     let completedCount = 0;
 
-    const collectionName = playlistName || tracks[0]?.album || 'Playlist';
-    const folderName =
-      isAlbum && tracks[0]?.artist ? `${collectionName} - ${tracks[0].artist}` : collectionName;
+    const collectionName =
+      playlistName ||
+      tracks[0]?.album ||
+      tracks[0]?.year ||
+      (tracks[0]?.artist ? `${tracks[0].artist} - Album` : 'Unknown Album');
     const FOLDER_DOWNLOAD_CONCURRENCY = 5;
 
     let nextIndex = 0;
@@ -295,7 +421,12 @@ export default function App() {
             videoQuality: settings.videoQuality,
             namingPattern: settings.namingPattern || 'artist_title',
             embedId3Tags: settings.embedId3Tags !== false,
-            albumFolder: total > 1 ? folderName : undefined,
+            albumFolder: total > 1 ? collectionName : undefined,
+            folderNamingPattern: isAlbum
+              ? settings.folderNamingPattern || 'album_artist'
+              : undefined,
+            albumName: isAlbum ? collectionName : undefined,
+            isAlbum: isAlbum,
           });
 
           completedCount++;
@@ -304,6 +435,13 @@ export default function App() {
           );
         } catch (err) {
           console.error(`Folder download error on track ${track.title}:`, err);
+          if (getErrorCode(err) === 'CANCELLED') {
+            setTracks(prev =>
+              prev.map(t => (t.id === track.id ? { ...t, status: 'cancelled', progress: 0 } : t))
+            );
+            stopRequested = true;
+            return;
+          }
           const message = friendlyError(err);
           setTracks(prev =>
             prev.map(t =>
@@ -324,6 +462,7 @@ export default function App() {
     const workerCount = Math.min(FOLDER_DOWNLOAD_CONCURRENCY, total);
     await Promise.all(Array.from({ length: workerCount }, runNext));
 
+    setIsCancellingBatch(false);
     setFolderProgressText(
       `Saved ${completedCount} of ${total} tracks to your configured download folder.`
     );
@@ -340,7 +479,7 @@ export default function App() {
     'Syncing high-fidelity 600x600px album art...',
     'Injecting catalog tagging descriptors...',
     'Finalizing raw audio buffers...',
-    'Hang tight, large playlists take a while',
+    'Hang tight, large playlists take a while!',
   ];
 
   useEffect(() => {
@@ -375,7 +514,7 @@ export default function App() {
               SONIC<span className="">·</span>RIPPER
             </h1>
           </div>
-          <p className="tracking-wider text-xs uppercase mt-2">Audio & Video Extractor</p>
+          <p className="tracking-wider text-xs font-bold uppercase mt-2">Audio & Video Extractor</p>
         </header>
 
         <StepProgress current={step} />
@@ -388,20 +527,18 @@ export default function App() {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -24 }}
               transition={{ duration: 0.35, ease: 'easeOut' }}
-              className="mx-auto px-2.5 justify-center w-full h-full bg-charcoal/40 border-b-2 border-olive/55 rounded-md"
+              className="w-full h-full px-3 py-4 bg-charcoal/40 border-b-2 border-olive/55 rounded-md"
             >
-              <section className="px-6 py-3 sm:px-8 sm:py-4 shadow-xl h-full my-auto relative">
-                <div className="flex items-center justify-between mb-5">
-                  <span className="uppercase font-display text-rust font-bold flex items-center gap-2">
-                    <span className="w-1.5 h-1.5" /> Add a source
-                  </span>
-                </div>
+              <section className="shadow-xl h-full my-auto relative">
+                <span className="uppercase font-display text-rust font-bold flex items-center mb-2">
+                  Add a source
+                </span>
 
-                <form onSubmit={handleAnalyze} className="space-y-4">
-                  <div className="flex flex-col sm:flex-row items-stretch gap-3">
-                    <div className="flex items-stretch grow rounded-sm border-2 border-rust w-full overflow-hidden">
-                      <div className="flex shrink-0 w-10 md:w-12 bg-rust items-center justify-center pointer-events-none">
-                        <Search className="size-5 md:size-7" />
+                <form onSubmit={handleAnalyze} className="space-y-4 w-full">
+                  <div className="flex flex-row items-center justify-between w-full gap-5">
+                    <div className="flex flex-1 flex-row items-center border-2 border-rust rounded-sm">
+                      <div className="h-full bg-rust p-2 justify-start">
+                        <Search className="size-7" />
                       </div>
                       <input
                         type="text"
@@ -411,8 +548,8 @@ export default function App() {
                           setSourceInput(e.target.value);
                           setError(null);
                         }}
-                        placeholder="Paste a link or search directly..."
-                        className="flex-1 min-w-0 py-4 px-2 outline-none transition-all"
+                        placeholder="Paste a Spotify/Youtube link or search directly..."
+                        className="justify-start flex-1 py-2 px-3 outline-none transition-all"
                         disabled={isAnalyzing || isBatchDownloading}
                       />
                       {sourceInput && (
@@ -423,10 +560,10 @@ export default function App() {
                             setError(null);
                           }}
                           disabled={isAnalyzing || isBatchDownloading}
-                          className="flex shrink-0 bg-rust/30 hover:rust/90 active:scale-102 w-10 md:w-12 px-2 transition-all duration-300 items-center cursor-pointer disabled:opacity-40"
+                          className="flex justify-end h-full bg-rust/30 hover:rust/90 active:scale-102 p-2 transition-all duration-300 items-center cursor-pointer disabled:opacity-40"
                           title="Clear"
                         >
-                          <X className="size-5" />
+                          <X className="size-7" />
                         </button>
                       )}
                     </div>
@@ -434,7 +571,7 @@ export default function App() {
                     <button
                       type="submit"
                       disabled={isAnalyzing || isBatchDownloading || !sourceInput}
-                      className="sm:w-44 py-4 font-medium bg-olive/60 hover:bg-olive rounded-sm active:scale-98 transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                      className="px-5 py-2.5 w-28.75 font-medium bg-olive/60 hover:bg-olive rounded-sm active:scale-98 transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                     >
                       {isAnalyzing ? (
                         <RefreshCw className="size-5 animate-spin" />
@@ -478,22 +615,36 @@ export default function App() {
                       initial={{ opacity: 0, y: 12 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0 }}
-                      id="analyzer-loader-card"
                       className="mt-6 p-8 text-center flex flex-col items-center justify-center"
                     >
                       <div className="relative mb-5">
                         <div className="w-12 h-12 rounded-full animate-spin" />
-                        <Sparkles className="w-5 h-5 absolute inset-0 m-auto animate-pulse" />
+                        <Sparkles className="size-10 absolute inset-0 m-auto animate-pulse" />
                       </div>
                       <h3 className="font-display uppercase tracking-[0.25em] mb-2">
                         Analyzing Catalog Metadata
                       </h3>
-                      <p className="h-5 transition-all duration-300">
-                        {loadingPhrases[loadingPhraseIndex]}
-                      </p>
+                      {analyzePercent !== null ? (
+                        <div className="w-full max-w-md">
+                          <div className="w-full h-2 rounded-sm overflow-hidden bg-olive/30">
+                            <motion.div
+                              className="bg-gold h-full"
+                              initial={{ width: '0%' }}
+                              animate={{ width: `${analyzePercent}%` }}
+                              transition={{ duration: 0.2 }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="h-5 transition-all duration-300">
+                          {loadingPhrases[loadingPhraseIndex]}
+                        </p>
+                      )}
                     </motion.div>
                   )}
                 </AnimatePresence>
+
+                <SpotifyPathfinderSettings />
               </section>
             </motion.div>
           )}
@@ -519,9 +670,7 @@ export default function App() {
                         <AudioLines className="size-5 text-rust" />
                       </div>
                       <div className="min-w-0">
-                        <p className="text-lg font-semibold text-cream truncate">
-                          {playlistName || 'Playlist'}
-                        </p>
+                        <p className="text-lg font-semibold text-cream truncate">{playlistName}</p>
                         <p className="text-[13px] mt-1">
                           {tracks.length} tracks parsed successfully
                         </p>
@@ -587,14 +736,14 @@ export default function App() {
                 <button
                   type="button"
                   onClick={goToConfigure}
-                  className="text-xs bg-olive p-2 rounded-md uppercase tracking-[0.2em] transition-colors cursor-pointer"
+                  className="text-xs bg-olive p-2 scale-98 hover:scale-100 rounded-md uppercase tracking-[0.2em] transition-all duration-300 cursor-pointer"
                 >
                   ← Back
                 </button>
                 <button
                   type="button"
                   onClick={goToSource}
-                  className="text-xs p-2 bg-rust rounded-md uppercase tracking-[0.2em] transition-colors cursor-pointer"
+                  className="text-xs p-2 bg-rust scale-98 hover:scale-100 rounded-md uppercase tracking-[0.2em] transition-all duration-300 cursor-pointer"
                 >
                   Start over
                 </button>
@@ -626,13 +775,13 @@ export default function App() {
                         type="button"
                         onClick={handleDownloadToFolder}
                         disabled={isBatchDownloading || isFolderDownloading}
-                        className="px-4 py-3 border-2 border-gold rounded-md text-xs uppercase tracking-[0.15em] transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
+                        className="px-4 py-3 border-2 border-gold hover:bg-gold rounded-md text-xs uppercase tracking-[0.15em] transition-colors duration-300 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                         title="Select a directory on your machine to save all tagged audio files directly into that folder"
                       >
                         {isFolderDownloading ? (
                           <RefreshCw className="size-3 animate-spin" />
                         ) : (
-                          <FolderPlus className="size-4 text-gold" />
+                          <FolderPlus className="size-4 text-cream" />
                         )}
                         <span>Save to Folder</span>
                       </button>
@@ -642,13 +791,13 @@ export default function App() {
                         type="button"
                         onClick={handleDownloadAll}
                         disabled={isBatchDownloading || isFolderDownloading}
-                        className="px-4 py-3 border-2 border-rust text-xs rounded-md uppercase tracking-[0.2em] transition-colors duration-300 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
+                        className="px-4 py-3 border-2 border-rust hover:bg-rust text-xs rounded-md uppercase tracking-[0.2em] transition-colors duration-300 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                         title="Download a single .ZIP archive containing all tagged tracks and folders"
                       >
                         {isBatchDownloading ? (
                           <RefreshCw className="size-3 animate-spin" />
                         ) : (
-                          <Archive className="size-4 text-rust" />
+                          <Archive className="size-4 text-cream" />
                         )}
                         <span>Save as ZIP</span>
                       </button>
@@ -664,6 +813,15 @@ export default function App() {
                         <FolderCheck className="size-5 animate-pulse" />
                         Saving directly into your selected folder...
                       </span>
+                      <button
+                        type="button"
+                        onClick={handleCancelBatch}
+                        disabled={isCancellingBatch}
+                        className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-sm bg-charcoal text-cream hover:bg-rust transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-charcoal"
+                      >
+                        <X className="size-3" />
+                        {isCancellingBatch ? 'Cancelling…' : 'Cancel'}
+                      </button>
                     </div>
                     <p className="text-xs text-gold">{folderProgressText}</p>
                   </div>
@@ -671,25 +829,35 @@ export default function App() {
 
                 {/* Batch Download Progress Bar */}
                 {isBatchDownloading && (
-                  <div id="batch-progress-bar-card" className="p-5 rounded-none">
-                    <div className="flex items-center justify-between text-[10px] font-mono font-bold tracking-widest text-brand uppercase mb-2">
-                      <span className="flex items-center gap-1.5">
-                        <RefreshCw className="w-3.5 h-3.5 text-brand animate-spin" />
+                  <div className="bg-olive/35 p-2 md:p-5 rounded-md my-2 items-center">
+                    <div className="flex items-center justify-between text-xs font-bold tracking-widest text-brand uppercase my-0.5">
+                      <span className="flex items-center text-charcoal gap-2">
+                        <RefreshCw className="size-5 animate-spin" />
                         Transcoding, tagging, and archiving tracks into ZIP...
                       </span>
-                      <span>{batchProgress}%</span>
+                      <div className="flex items-center gap-3">
+                        <span>{batchProgress}%</span>
+                        <button
+                          type="button"
+                          onClick={handleCancelBatch}
+                          disabled={isCancellingBatch}
+                          className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-sm bg-charcoal text-cream hover:bg-rust transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-charcoal"
+                        >
+                          <X className="size-3" />
+                          {isCancellingBatch ? 'Cancelling…' : 'Cancel'}
+                        </button>
+                      </div>
                     </div>
-                    <div className="w-full h-2 rounded-none overflow-hidden">
+                    <div className="w-full h-2 bg-charcoal rounded-none overflow-hidden">
                       <motion.div
-                        className="bg-brand h-full"
+                        className="bg-rust h-full"
                         initial={{ width: '0%' }}
                         animate={{ width: `${batchProgress}%` }}
                         transition={{ duration: 0.1 }}
                       />
                     </div>
                     <p className="text-[9px] mt-2 uppercase tracking-wide">
-                      Tracks are tagged with ID3 v2.3 metadata, covers, and organized inside your
-                      archive.
+                      Tracks are tagged with metadata, covers, and organized inside your archive.
                     </p>
                   </div>
                 )}
@@ -707,6 +875,7 @@ export default function App() {
                           track={track}
                           index={index}
                           onDownloadSingle={handleDownloadSingle}
+                          onCancelSingle={handleCancelSingle}
                           onPlayTrack={handlePlayTrack}
                           activeTrackId={playingTrack?.id}
                           isBatchDownloading={isBatchDownloading}

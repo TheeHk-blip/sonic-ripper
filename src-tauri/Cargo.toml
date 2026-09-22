@@ -1,8 +1,8 @@
 [package]
 name = "sonicripper"
-version = "1.0.0"
+version = "1.0.1"
 description = "A Music downloader App"
-authors = ["theehk-blip"]
+authors = ["TheeHk-blip"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -29,7 +29,7 @@ thiserror = "1"
 anyhow = "1"
 chrono = "0.4"
 url = "2"
-tokio = { version = "1.53.1", features = ["process", "fs", "rt-multi-thread", "sync"] }
+tokio = { version = "1.53.1", features = ["full"] }
 tauri-plugin-dialog = "2.7.2"
 tempfile = "3.27.0"
 zip = "8.6.0"
@@ -37,3 +37,5 @@ tauri-plugin-shell = "2.3.5"
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-localhost = "2"
 tiny_http = "0.12"
+directories = "6.0.0"
+tokio-util = "0.7.19"

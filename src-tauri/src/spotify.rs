@@ -4,10 +4,9 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
+use crate::http;
 use crate::models::{ScrapedResult, ScrapedTrackItem};
-
-const DEFAULT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 static URI_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)spotify:(track|playlist|album|artist):([a-zA-Z0-9]+)").unwrap());
@@ -45,14 +44,6 @@ fn decode_html(s: &str) -> String {
         .replace("&gt;", ">")
 }
 
-fn client() -> AppResult<reqwest::Client> {
-    reqwest::Client::builder()
-        .user_agent(DEFAULT_UA)
-        .timeout(std::time::Duration::from_secs(12))
-        .build()
-        .map_err(AppError::from)
-}
-
 fn extract_release_year(entity: &Value) -> Option<String> {
     let candidates: Vec<Option<&Value>> = vec![
         entity.pointer("/releaseDate/isoString"),
@@ -62,6 +53,8 @@ fn extract_release_year(entity: &Value) -> Option<String> {
         entity.pointer("/album/releaseDate/year"),
         entity.pointer("/album/releaseDate"),
         entity.pointer("/album/date"),
+        entity.pointer("/albumOfTrack/date/isoString"),
+        entity.pointer("/albumOfTrack/date"),
         entity.get("date"),
         entity.get("year"),
     ];
@@ -148,6 +141,15 @@ fn best_cover_url(entity: &Value) -> Option<String> {
             push_source(s);
         }
     }
+    // Pathfinder ("albumOfTrack") schema, e.g. fetchPlaylist's itemV2.data.albumOfTrack
+    if let Some(sources) = entity
+        .pointer("/albumOfTrack/coverArt/sources")
+        .and_then(|v| v.as_array())
+    {
+        for s in sources {
+            push_source(s);
+        }
+    }
 
     if candidates.is_empty() {
         return None;
@@ -157,21 +159,12 @@ fn best_cover_url(entity: &Value) -> Option<String> {
 }
 
 struct TrackPageFallback {
-    album: Option<String>,
-    year: Option<String>,
     cover_url: Option<String>,
 }
 
 async fn fetch_track_page_fallback(track_url: &str) -> TrackPageFallback {
-    let empty = TrackPageFallback {
-        album: None,
-        year: None,
-        cover_url: None,
-    };
-    let c = match client() {
-        Ok(c) => c,
-        Err(_) => return empty,
-    };
+    let empty = TrackPageFallback { cover_url: None };
+    let c = http::client();
     let res = match c
         .get(track_url)
         .header("Accept-Language", "en-US,en;q=0.9")
@@ -185,37 +178,13 @@ async fn fetch_track_page_fallback(track_url: &str) -> TrackPageFallback {
         Ok(h) => h,
         Err(_) => return empty,
     };
-
-    let mut album = None;
-    let mut year = None;
-    if let Some(caps) = OG_DESC_RE.captures(&html) {
-        let desc = decode_html(&caps[1]);
-        let parts: Vec<&str> = desc
-            .split(" · ")
-            .map(|p| p.trim())
-            .filter(|p| !p.is_empty())
-            .collect();
-        if parts.len() >= 3 && parts[1].to_lowercase() != "song" {
-            album = Some(parts[1].to_string());
-        }
-        if let Some(m) = YEAR_RE.find(&desc) {
-            year = Some(m.as_str().to_string());
-        }
-    }
-    let cover_url = OG_IMAGE_RE.captures(&html).map(|c| decode_html(&c[1]));
-
     TrackPageFallback {
-        album,
-        year,
-        cover_url,
+        cover_url: OG_IMAGE_RE.captures(&html).map(|c| decode_html(&c[1])),
     }
 }
 
 async fn fetch_album_page_fallback(album_url: &str) -> (Option<String>, Option<String>) {
-    let c = match client() {
-        Ok(c) => c,
-        Err(_) => return (None, None),
-    };
+    let c = http::client();
     let res = match c.get(album_url).send().await {
         Ok(r) if r.status().is_success() => r,
         _ => return (None, None),
@@ -247,7 +216,7 @@ async fn fetch_album_page_fallback(album_url: &str) -> (Option<String>, Option<S
 }
 
 async fn fetch_page_og_image(url: &str) -> Option<String> {
-    let c = client().ok()?;
+    let c = http::client();
     let res = c.get(url).send().await.ok()?;
     if !res.status().is_success() {
         return None;
@@ -256,7 +225,31 @@ async fn fetch_page_og_image(url: &str) -> Option<String> {
     OG_IMAGE_RE.captures(&html).map(|c| decode_html(&c[1]))
 }
 
-const COVER_FETCH_CONCURRENCY: usize = 8;
+const PLAYLIST_CONCURRENCY: usize = 4;
+
+// Artist name(s) from either the embed schema (`artists: [{name}]`) or the
+// Pathfinder schema (`artists: {items: [{profile: {name}}]}`).
+fn track_artists(data: &Value) -> Option<String> {
+    if let Some(items) = data.pointer("/artists/items").and_then(|v| v.as_array()) {
+        let names: Vec<&str> = items
+            .iter()
+            .filter_map(|a| a.pointer("/profile/name").and_then(|v| v.as_str()))
+            .collect();
+        if !names.is_empty() {
+            return Some(decode_html(&names.join(", ")));
+        }
+    }
+    if let Some(arr) = data.get("artists").and_then(|v| v.as_array()) {
+        let names: Vec<&str> = arr
+            .iter()
+            .filter_map(|a| a.get("name").and_then(|v| v.as_str()))
+            .collect();
+        if !names.is_empty() {
+            return Some(decode_html(&names.join(", ")));
+        }
+    }
+    None
+}
 
 fn track_id_from_entry(t: &Value) -> Option<String> {
     if let Some(uri) = t.get("uri").and_then(|v| v.as_str()) {
@@ -268,117 +261,158 @@ fn track_id_from_entry(t: &Value) -> Option<String> {
     t.get("id").and_then(|v| v.as_str()).map(String::from)
 }
 
-struct TrackEmbedMeta {
-    album: Option<String>,
-    cover_url: Option<String>,
+fn album_id_from_track_entity(entity: &Value) -> Option<String> {
+    if let Some(uri) = entity.pointer("/album/uri").and_then(|v| v.as_str()) {
+        let id = uri.rsplit(':').next().unwrap_or("");
+        if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Some(id.to_string());
+        }
+    }
+    entity
+        .pointer("/album/id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
 }
 
-async fn fetch_track_via_web_api(track_id: &str, token: &str) -> Option<TrackEmbedMeta> {
-    let c = client().ok()?;
-    let url = format!("https://api.spotify.com/v1/tracks/{track_id}");
-    let res = c
-        .get(&url)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .ok()?;
-    if !res.status().is_success() {
-        return None;
+// Picks the track matching `wanted_title` out of a Pathfinder-resolved
+// album's track list. Exact (case/whitespace-insensitive) title match wins;
+// if nothing matches but the album has exactly one track — the genuine
+// "single" case — that lone track is trusted rather than left unmatched,
+// since minor formatting drift (e.g. featured-artist punctuation) between
+// the embed page's title and Pathfinder's is more likely than a wrong album.
+// Anything more ambiguous than that returns None so the caller can fall
+// back to the embed path instead of guessing.
+fn pick_matching_track(
+    tracks: Vec<ScrapedTrackItem>,
+    wanted_title: &str,
+) -> Option<ScrapedTrackItem> {
+    let wanted = wanted_title.trim().to_lowercase();
+    if let Some(pos) = tracks
+        .iter()
+        .position(|t| t.title.trim().to_lowercase() == wanted)
+    {
+        let mut tracks = tracks;
+        return Some(tracks.remove(pos));
     }
-    let data: Value = res.json().await.ok()?;
-    let album = data
-        .pointer("/album/name")
-        .and_then(|v| v.as_str())
-        .map(decode_html);
-    // Web API returns album images largest-first.
-    let cover_url = data
-        .pointer("/album/images")
-        .and_then(|v| v.as_array())
-        .and_then(|imgs| imgs.first())
-        .and_then(|img| img.get("url"))
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    if album.is_some() || cover_url.is_some() {
-        Some(TrackEmbedMeta { album, cover_url })
-    } else {
-        None
+    if tracks.len() == 1 {
+        let mut tracks = tracks;
+        return Some(tracks.remove(0));
     }
+    None
 }
 
-async fn fetch_track_embed_meta(
-    semaphore: Arc<Semaphore>,
-    track_id: Option<String>,
-    playlist_access_token: Option<Arc<String>>,
-) -> Option<TrackEmbedMeta> {
-    let track_id = track_id?;
-    let _permit = semaphore.acquire_owned().await.ok()?;
-
+async fn resolve_track_as_single(track_id: &str) -> Option<ScrapedTrackItem> {
+    let mut title = String::new();
+    let mut artist = String::new();
     let mut album: Option<String> = None;
     let mut cover_url: Option<String> = None;
-    let mut access_token: Option<String> = None;
+    let mut release_year: Option<String> = None;
+    let mut duration: Option<u32> = None;
+    let mut preview_url: Option<String> = None;
 
     let embed_url = format!("https://open.spotify.com/embed/track/{track_id}");
-    if let Ok(c) = client() {
-        if let Ok(res) = c
+    {
+        let c = http::client();
+        match c
             .get(&embed_url)
             .header("Accept-Language", "en-US,en;q=0.9")
             .send()
             .await
         {
-            if res.status().is_success() {
+            Ok(res) if res.status().is_success() => {
                 if let Ok(html) = res.text().await {
                     if let Some(caps) = NEXT_DATA_RE.captures(&html) {
                         if let Ok(next_data) = serde_json::from_str::<Value>(&caps[1]) {
-                            access_token = extract_access_token(&next_data);
                             if let Some(entity) =
                                 next_data.pointer("/props/pageProps/state/data/entity")
                             {
+                                title = decode_html(
+                                    entity
+                                        .get("name")
+                                        .or_else(|| entity.get("title"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or(""),
+                                );
+                                artist = if let Some(artists) =
+                                    entity.get("artists").and_then(|v| v.as_array())
+                                {
+                                    decode_html(
+                                        &artists
+                                            .iter()
+                                            .filter_map(|a| a.get("name").and_then(|n| n.as_str()))
+                                            .collect::<Vec<_>>()
+                                            .join(", "),
+                                    )
+                                } else {
+                                    entity
+                                        .get("artist")
+                                        .or_else(|| entity.get("subtitle"))
+                                        .and_then(|v| v.as_str())
+                                        .map(decode_html)
+                                        .unwrap_or_default()
+                                };
+                                // Spotify's embed schema doesn't carry album data at
+                                // all for most tracks (confirmed by direct testing) —
+                                // this extraction is kept in case that ever changes,
+                                // but there's no further fallback for it: it's left
+                                // blank rather than guessed.
                                 album = entity
                                     .pointer("/album/name")
                                     .and_then(|v| v.as_str())
-                                    .map(decode_html);
+                                    .map(decode_html)
+                                    .filter(|s| !s.is_empty());
                                 cover_url = best_cover_url(entity);
+                                release_year = extract_release_year(entity);
+                                duration = entity
+                                    .get("duration")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|ms| (ms as f64 / 1000.0).round() as u32);
+                                preview_url = entity
+                                    .pointer("/audioPreview/url")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from);
                             }
                         }
                     }
                 }
             }
-        }
-    }
-
-    let access_token =
-        access_token.or_else(|| playlist_access_token.as_deref().map(|t| t.to_string()));
-
-    if (album.is_none() || cover_url.is_none()) && access_token.is_some() {
-        if let Some(meta) =
-            fetch_track_via_web_api(&track_id, access_token.as_deref().unwrap()).await
-        {
-            if album.is_none() {
-                album = meta.album;
+            Ok(res) => {
+                eprintln!(
+                    "[Spotify Scraper] single track embed fetch ({track_id}) HTTP {}",
+                    res.status()
+                );
             }
-            if cover_url.is_none() {
-                cover_url = meta.cover_url;
+            Err(e) => {
+                eprintln!(
+                    "[Spotify Scraper] single track embed fetch ({track_id}) request error: {e}"
+                );
             }
         }
     }
 
-    if album.is_none() || cover_url.is_none() {
+    if cover_url.is_none() {
         let open_url = format!("https://open.spotify.com/track/{track_id}");
-        let page_fallback = fetch_track_page_fallback(&open_url).await;
-        if album.is_none() {
-            album = page_fallback.album;
-        }
-        if cover_url.is_none() {
-            cover_url = page_fallback.cover_url;
-        }
+        cover_url = fetch_track_page_fallback(&open_url).await.cover_url;
     }
 
-    if album.is_some() || cover_url.is_some() {
-        Some(TrackEmbedMeta { album, cover_url })
-    } else {
-        None
+    if title.is_empty() {
+        return None;
     }
+
+    Some(ScrapedTrackItem {
+        title,
+        artist: if artist.is_empty() {
+            "Unknown Artist".to_string()
+        } else {
+            artist
+        },
+        album,
+        album_artist: None,
+        duration,
+        cover_url,
+        preview_url,
+        release_year,
+    })
 }
 
 pub async fn resolve_album_year(
@@ -410,7 +444,8 @@ pub async fn resolve_album_year(
                 let track_id = uri.rsplit(':').next().unwrap_or("");
                 if !track_id.is_empty() && track_id.chars().all(|c| c.is_ascii_alphanumeric()) {
                     let embed_url = format!("https://open.spotify.com/embed/track/{track_id}");
-                    if let Ok(c) = client() {
+                    {
+                        let c = http::client();
                         if let Ok(res) = c
                             .get(&embed_url)
                             .header("Accept-Language", "en-US,en;q=0.9")
@@ -447,8 +482,8 @@ pub async fn resolve_album_year(
     None
 }
 
-/// Pull the anonymous access token Spotify embeds in `__NEXT_DATA__`.
-/// Used to call spclient for full playlist track lists (>~100 tracks).
+// Pull the anonymous access token Spotify embeds in `__NEXT_DATA__`.
+// Used to call spclient for full playlist track lists (>~100 tracks).
 fn extract_access_token(next_data: &Value) -> Option<String> {
     const PATHS: &[&str] = &[
         "/props/pageProps/state/settings/session/accessToken",
@@ -465,9 +500,9 @@ fn extract_access_token(next_data: &Value) -> Option<String> {
     None
 }
 
-/// Full ordered track IDs for a playlist via spclient (no 100-track cap).
+// Full ordered track IDs for a playlist via spclient (no 100-track cap).
 async fn fetch_playlist_track_ids_spclient(playlist_id: &str, token: &str) -> Option<Vec<String>> {
-    let c = client().ok()?;
+    let c = http::client();
     let url = format!("https://spclient.wg.spotify.com/playlist/v2/playlist/{playlist_id}");
     let res = c
         .get(&url)
@@ -501,71 +536,468 @@ async fn fetch_playlist_track_ids_spclient(playlist_id: &str, token: &str) -> Op
     }
 }
 
-/// Metadata for one track from its embed page (used for tracks beyond the
-/// first ~100 that the playlist embed does not include).
-async fn fetch_track_item_from_embed(track_id: String) -> Option<ScrapedTrackItem> {
-    let c = client().ok()?;
-    let embed_url = format!("https://open.spotify.com/embed/track/{track_id}");
+const PATHFINDER_PAGE_SIZE: u32 = 100;
+const PATHFINDER_MAX_PAGES: u32 = 50; // safety cap (~5k tracks) against a bad totalCount
+
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+struct PathfinderConfig {
+    client_token: Option<String>,
+    pathfinder_hash: Option<String>,
+    get_album_hash: Option<String>,
+}
+
+fn pathfinder_config_path() -> Option<std::path::PathBuf> {
+    let dirs = directories::ProjectDirs::from("com", "TheeHk-blip", "sonicripper")?;
+    let dir = dirs.config_dir();
+    std::fs::create_dir_all(dir).ok()?;
+    Some(dir.join("spotify_pathfinder.json"))
+}
+
+fn load_pathfinder_config() -> PathfinderConfig {
+    pathfinder_config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_pathfinder_config(cfg: &PathfinderConfig) {
+    let Some(path) = pathfinder_config_path() else {
+        eprintln!("[Spotify Scraper] couldn't resolve config dir — settings won't persist");
+        return;
+    };
+    match serde_json::to_string_pretty(cfg) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                eprintln!("[Spotify Scraper] failed writing {}: {e}", path.display());
+            }
+        }
+        Err(e) => eprintln!("[Spotify Scraper] failed serializing pathfinder config: {e}"),
+    }
+}
+
+static PATHFINDER_CONFIG: Lazy<std::sync::Mutex<PathfinderConfig>> =
+    Lazy::new(|| std::sync::Mutex::new(load_pathfinder_config()));
+
+pub fn set_pathfinder_hash(hash: String) {
+    let trimmed = hash.trim().to_string();
+    let mut guard = PATHFINDER_CONFIG.lock().unwrap();
+    guard.pathfinder_hash = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    };
+    save_pathfinder_config(&guard);
+}
+
+pub fn pathfinder_hash() -> Option<String> {
+    PATHFINDER_CONFIG.lock().unwrap().pathfinder_hash.clone()
+}
+
+pub fn set_get_album_hash(hash: String) {
+    let trimmed = hash.trim().to_string();
+    let mut guard = PATHFINDER_CONFIG.lock().unwrap();
+    guard.get_album_hash = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    };
+    save_pathfinder_config(&guard);
+}
+
+pub fn get_album_hash() -> Option<String> {
+    PATHFINDER_CONFIG.lock().unwrap().get_album_hash.clone()
+}
+
+pub fn set_spotify_client_token(token: String) {
+    let trimmed = token.trim().to_string();
+    let mut guard = PATHFINDER_CONFIG.lock().unwrap();
+    guard.client_token = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    };
+    save_pathfinder_config(&guard);
+}
+
+pub fn spotify_client_token() -> Option<String> {
+    PATHFINDER_CONFIG.lock().unwrap().client_token.clone()
+}
+
+async fn fetch_pathfinder_playlist_page(
+    playlist_uri: &str,
+    offset: u32,
+    limit: u32,
+    access_token: &str,
+    client_token: &str,
+) -> Option<Value> {
+    let c = http::client();
+    let body = serde_json::json!({
+        "variables": {
+            "uri": playlist_uri,
+            "offset": offset,
+            "limit": limit,
+            "enableWatchFeedEntrypoint": true,
+            "includeEpisodeContentRatingsV2": true
+        },
+        "operationName": "fetchPlaylist",
+        "extensions": {
+            "persistedQuery": {
+                "version": 1,
+                "sha256Hash": pathfinder_hash()
+            }
+        }
+    });
+
     let res = c
-        .get(&embed_url)
-        .header("Accept-Language", "en-US,en;q=0.9")
+        .post("https://api-partner.spotify.com/pathfinder/v2/query")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("client-token", client_token)
+        .header("accept", "application/json")
+        .header("content-type", "application/json;charset=UTF-8")
+        .header("app-platform", "WebPlayer")
+        .json(&body)
         .send()
         .await
         .ok()?;
+
     if !res.status().is_success() {
+        eprintln!(
+            "[Spotify Scraper] pathfinder fetchPlaylist HTTP {} (offset {offset})",
+            res.status()
+        );
         return None;
     }
-    let html = res.text().await.ok()?;
-    let caps = NEXT_DATA_RE.captures(&html)?;
-    let next_data: Value = serde_json::from_str(&caps[1]).ok()?;
-    let entity = next_data.pointer("/props/pageProps/state/data/entity")?;
+    match res.json::<Value>().await {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("[Spotify Scraper] pathfinder fetchPlaylist: bad JSON: {e}");
+            None
+        }
+    }
+}
 
-    let title = decode_html(
-        entity
+struct PathfinderPage {
+    total_count: u32,
+    tracks: Vec<ScrapedTrackItem>,
+}
+
+fn parse_pathfinder_playlist_page(page: &Value) -> Option<PathfinderPage> {
+    let content = page.pointer("/data/playlistV2/content")?;
+    let total_count = content
+        .get("totalCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let items = content.get("items")?.as_array()?;
+
+    let mut tracks = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(data) = item.pointer("/itemV2/data") else {
+            continue;
+        };
+
+        if data.get("__typename").and_then(|v| v.as_str()) != Some("Track") {
+            continue;
+        }
+
+        let title = data
             .get("name")
-            .or_else(|| entity.get("title"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown Track"),
-    );
-    let artist = if let Some(artists) = entity.get("artists").and_then(|v| v.as_array()) {
-        decode_html(
-            &artists
-                .iter()
-                .filter_map(|a| a.get("name").and_then(|n| n.as_str()))
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
-    } else {
-        entity
-            .get("subtitle")
             .and_then(|v| v.as_str())
             .map(decode_html)
-            .unwrap_or_else(|| "Unknown Artist".to_string())
+            .unwrap_or_else(|| "Unknown Track".to_string());
+        let artist = track_artists(data).unwrap_or_else(|| "Unknown Artist".to_string());
+        let album = data
+            .pointer("/albumOfTrack/name")
+            .and_then(|v| v.as_str())
+            .map(decode_html);
+        let duration = data
+            .pointer("/trackDuration/totalMilliseconds")
+            .and_then(|v| v.as_u64())
+            .map(|ms| (ms as f64 / 1000.0).round() as u32);
+        let cover_url = best_cover_url(data);
+        let release_year = extract_release_year(data);
+
+        tracks.push(ScrapedTrackItem {
+            title,
+            artist,
+            album,
+            album_artist: None,
+            duration,
+            cover_url,
+            preview_url: None,
+            release_year,
+        });
+    }
+
+    Some(PathfinderPage {
+        total_count,
+        tracks,
+    })
+}
+
+async fn resolve_playlist_via_pathfinder(
+    entity_id: &str,
+    access_token: &str,
+    client_token: &str,
+) -> Option<Vec<ScrapedTrackItem>> {
+    let playlist_uri = format!("spotify:playlist:{entity_id}");
+    let mut tracks = Vec::new();
+    let mut offset = 0u32;
+
+    for page_num in 0..PATHFINDER_MAX_PAGES {
+        let page = fetch_pathfinder_playlist_page(
+            &playlist_uri,
+            offset,
+            PATHFINDER_PAGE_SIZE,
+            access_token,
+            client_token,
+        )
+        .await?;
+        let parsed = parse_pathfinder_playlist_page(&page)?;
+
+        let got = parsed.tracks.len() as u32;
+        tracks.extend(parsed.tracks);
+        offset += PATHFINDER_PAGE_SIZE;
+
+        println!(
+            "[Spotify Scraper] pathfinder page {page_num}: +{got} tracks ({}/{})",
+            tracks.len(),
+            parsed.total_count
+        );
+
+        if offset >= parsed.total_count || got == 0 {
+            break;
+        }
+    }
+
+    if tracks.is_empty() {
+        None
+    } else {
+        Some(tracks)
+    }
+}
+
+async fn fetch_pathfinder_album_page(
+    album_uri: &str,
+    offset: u32,
+    limit: u32,
+    access_token: &str,
+    client_token: &str,
+) -> Option<Value> {
+    let c = http::client();
+    let body = serde_json::json!({
+        "variables": {
+            "uri": album_uri,
+            "locale": "",
+            "offset": offset,
+            "limit": limit
+        },
+        "operationName": "getAlbum",
+        "extensions": {
+            "persistedQuery": {
+                "version": 1,
+                "sha256Hash": get_album_hash()
+            }
+        }
+    });
+
+    let res = c
+        .post("https://api-partner.spotify.com/pathfinder/v2/query")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("client-token", client_token)
+        .header("accept", "application/json")
+        .header("content-type", "application/json;charset=UTF-8")
+        .header("app-platform", "WebPlayer")
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+
+    if !res.status().is_success() {
+        eprintln!(
+            "[Spotify Scraper] pathfinder getAlbum HTTP {} (offset {offset})",
+            res.status()
+        );
+        return None;
+    }
+    match res.json::<Value>().await {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("[Spotify Scraper] pathfinder getAlbum: bad JSON: {e}");
+            None
+        }
+    }
+}
+
+struct PathfinderAlbumPage {
+    album_name: Option<String>,
+    total_count: u32,
+    tracks: Vec<ScrapedTrackItem>,
+}
+
+fn parse_pathfinder_album_page(page: &Value) -> Option<PathfinderAlbumPage> {
+    // "/data/albumUnion" confirmed via a real captured response;
+    // the others are kept as fallbacks in case Spotify varies this by
+    // album/region/client version.
+    const CANDIDATE_ROOTS: &[&str] = &[
+        "/data/albumUnion",
+        "/data/albumUnionV2",
+        "/data/album",
+        "/data/albumV2",
+    ];
+
+    let mut container = None;
+    for path in CANDIDATE_ROOTS {
+        if let Some(c) = page.pointer(path) {
+            println!("[Spotify Scraper] pathfinder getAlbum: matched root {path}");
+            container = Some(c);
+            break;
+        }
+    }
+    let Some(container) = container else {
+        if let Some(data) = page.get("data") {
+            if let Some(obj) = data.as_object() {
+                println!(
+                    "[Spotify Scraper] pathfinder getAlbum: none of {:?} matched; \
+                     top-level keys under /data were: {:?}",
+                    CANDIDATE_ROOTS,
+                    obj.keys().collect::<Vec<_>>()
+                );
+            }
+        } else {
+            println!(
+                "[Spotify Scraper] pathfinder getAlbum: response had no /data at all — \
+                 raw response: {page}"
+            );
+        }
+        return None;
     };
-    let album = entity
-        .pointer("/album/name")
+
+    let album_name = container
+        .get("name")
         .and_then(|v| v.as_str())
         .map(decode_html);
-    let duration = entity
-        .get("duration")
-        .and_then(|v| v.as_u64())
-        .map(|ms| (ms as f64 / 1000.0).round() as u32);
-    let preview_url = entity
-        .pointer("/audioPreview/url")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let cover_url = best_cover_url(entity);
-    let release_year = extract_release_year(entity);
+    let album_cover = best_cover_url(container);
+    let album_year = extract_release_year(container);
+    let album_artist = track_artists(container);
 
-    Some(ScrapedTrackItem {
-        title,
-        artist,
-        album,
-        duration,
-        cover_url,
-        preview_url,
-        release_year,
+    // Track list container: try a couple of plausible keys/shapes.
+    let tracks_container = container
+        .get("tracksV2")
+        .or_else(|| container.get("tracks"));
+    let Some(tracks_container) = tracks_container else {
+        println!(
+            "[Spotify Scraper] pathfinder getAlbum: matched album root but no tracks/tracksV2 \
+             key — album-level keys were: {:?}",
+            container.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
+        return None;
+    };
+
+    let total_count = tracks_container
+        .get("totalCount")
+        .or_else(|| tracks_container.get("total"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let items = tracks_container
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut tracks = Vec::with_capacity(items.len());
+    for item in &items {
+        // Some Pathfinder list shapes wrap the real object under a "track"
+        // (or "itemV2"/"data") key; fall back to the item itself if not.
+        let data = item
+            .get("track")
+            .or_else(|| item.pointer("/itemV2/data"))
+            .unwrap_or(item);
+
+        let title = data
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(decode_html)
+            .unwrap_or_else(|| "Unknown Track".to_string());
+        let artist = track_artists(data).unwrap_or_else(|| "Unknown Artist".to_string());
+
+        let duration = data
+            .pointer("/duration/totalMilliseconds")
+            .or_else(|| data.pointer("/trackDuration/totalMilliseconds"))
+            .and_then(|v| v.as_u64())
+            .or_else(|| data.get("durationMs").and_then(|v| v.as_u64()))
+            .or_else(|| data.get("duration_ms").and_then(|v| v.as_u64()))
+            .or_else(|| item.get("duration_ms").and_then(|v| v.as_u64()))
+            .map(|ms| (ms as f64 / 1000.0).round() as u32);
+
+        let cover_url = best_cover_url(data).or_else(|| album_cover.clone());
+
+        tracks.push(ScrapedTrackItem {
+            title,
+            artist,
+            album: album_name.clone(),
+            album_artist: album_artist.clone(),
+            duration,
+            cover_url,
+            preview_url: None,
+            release_year: album_year.clone(),
+        });
+    }
+
+    Some(PathfinderAlbumPage {
+        album_name,
+        total_count,
+        tracks,
     })
+}
+
+async fn resolve_album_via_pathfinder(
+    entity_id: &str,
+    access_token: &str,
+    client_token: &str,
+) -> Option<(String, Vec<ScrapedTrackItem>)> {
+    let album_uri = format!("spotify:album:{entity_id}");
+    let mut tracks = Vec::new();
+    let mut offset = 0u32;
+    let mut album_name = None;
+
+    for page_num in 0..PATHFINDER_MAX_PAGES {
+        let page = fetch_pathfinder_album_page(
+            &album_uri,
+            offset,
+            PATHFINDER_PAGE_SIZE,
+            access_token,
+            client_token,
+        )
+        .await?;
+        let parsed = parse_pathfinder_album_page(&page)?;
+
+        if album_name.is_none() {
+            album_name = parsed.album_name.clone();
+        }
+
+        let got = parsed.tracks.len() as u32;
+        tracks.extend(parsed.tracks);
+        offset += PATHFINDER_PAGE_SIZE;
+
+        println!(
+            "[Spotify Scraper] pathfinder getAlbum page {page_num}: +{got} tracks ({}/{})",
+            tracks.len(),
+            parsed.total_count
+        );
+
+        if offset >= parsed.total_count || got == 0 {
+            break;
+        }
+    }
+
+    if tracks.is_empty() {
+        None
+    } else {
+        Some((
+            album_name.unwrap_or_else(|| "Unknown Album".to_string()),
+            tracks,
+        ))
+    }
 }
 
 pub async fn scrape_spotify(input: &str) -> AppResult<Option<ScrapedResult>> {
@@ -582,10 +1014,9 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
     let mut url = input_url.trim().to_string();
 
     if url.contains("spotify.link") || url.contains("spoti.fi") {
-        if let Ok(c) = client() {
-            if let Ok(res) = c.head(&url).send().await {
-                url = res.url().to_string();
-            }
+        let c = http::client();
+        if let Ok(res) = c.head(&url).send().await {
+            url = res.url().to_string();
         }
     }
 
@@ -604,7 +1035,7 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
     }
 
     let embed_url = format!("https://open.spotify.com/embed/{entity_type}/{entity_id}");
-    let c = client()?;
+    let c = http::client();
     let embed_res = match c
         .get(&embed_url)
         .header("Accept-Language", "en-US,en;q=0.9")
@@ -636,6 +1067,66 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
                 .and_then(|v| v.as_str())
                 .unwrap_or(""),
         );
+
+        // Preferred path: Spotify has no dedicated single-track Pathfinder
+        // query — a single is just a one-track album — so resolving via the
+        // same getAlbum call used for full albums and picking the matching
+        // track out of its list gets real album metadata (name/cover/year)
+        // that the embed page's track entity mostly can't provide (see the
+        // "Left blank rather than guessed" comment below). Falls through to
+        // the existing embed-scraping logic on any failure.
+        if !title.is_empty() {
+            if let Some(album_id) = album_id_from_track_entity(entity) {
+                match (anon_access_token.as_deref(), spotify_client_token()) {
+                    (Some(token), Some(client_token)) => {
+                        match resolve_album_via_pathfinder(&album_id, token, &client_token).await {
+                            Some((_album_name, tracks)) => {
+                                match pick_matching_track(tracks, &title) {
+                                    Some(track) => {
+                                        println!(
+                                            "[Spotify Scraper] resolved track via pathfinder \
+                                             getAlbum (parent album {album_id})"
+                                        );
+                                        return Ok(Some(ScrapedResult::Track(track)));
+                                    }
+                                    None => {
+                                        println!(
+                                            "[Spotify Scraper] pathfinder getAlbum resolved parent \
+                                             album {album_id} but no track matched \"{title}\" \
+                                             unambiguously — falling back to embed path"
+                                        );
+                                    }
+                                }
+                            }
+                            None => {
+                                println!(
+                                    "[Spotify Scraper] pathfinder getAlbum unavailable/failed for \
+                                     parent album {album_id} — falling back to embed path"
+                                );
+                            }
+                        }
+                    }
+                    (None, _) => {
+                        println!(
+                            "[Spotify Scraper] pathfinder skipped: no anon access token extracted \
+                             from embed page __NEXT_DATA__ — falling back to embed path"
+                        );
+                    }
+                    (_, None) => {
+                        println!(
+                            "[Spotify Scraper] pathfinder skipped: no client token set — \
+                             falling back to embed path"
+                        );
+                    }
+                }
+            } else {
+                println!(
+                    "[Spotify Scraper] pathfinder skipped: no album id found on track entity \
+                     (tried /album/uri, /album/id) — falling back to embed path"
+                );
+            }
+        }
+
         let artist = if let Some(artists) = entity.get("artists").and_then(|v| v.as_array()) {
             decode_html(
                 &artists
@@ -661,25 +1152,22 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
         let entity_cover = best_cover_url(entity);
         let entity_year = extract_release_year(entity);
 
-        let needs_fallback =
-            entity_album.is_empty() || entity_cover.is_none() || entity_year.is_none();
-        let fallback = if needs_fallback {
-            Some(fetch_track_page_fallback(&url).await)
+        // Cover-only fallback: album and year aren't recoverable from the full page
+        // (no __NEXT_DATA__, no og:description on it, confirmed by direct testing),
+        let cover_url = if entity_cover.is_some() {
+            entity_cover
         } else {
-            None
+            fetch_track_page_fallback(&url).await.cover_url
         };
 
-        let album = if !entity_album.is_empty() {
-            entity_album
+        // Left blank rather than guessed: Spotify's embed schema doesn't carry album
+        // data for most tracks, and defaulting to the track title is only right for singles
+        let album = if entity_album.is_empty() {
+            None
         } else {
-            fallback
-                .as_ref()
-                .and_then(|f| f.album.clone())
-                .unwrap_or_else(|| title.clone())
+            Some(entity_album)
         };
-        let cover_url =
-            entity_cover.or_else(|| fallback.as_ref().and_then(|f| f.cover_url.clone()));
-        let release_year = entity_year.or_else(|| fallback.as_ref().and_then(|f| f.year.clone()));
+        let release_year = entity_year;
         let preview_url = entity
             .pointer("/audioPreview/url")
             .and_then(|v| v.as_str())
@@ -687,8 +1175,7 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
         let duration = entity
             .get("duration")
             .and_then(|v| v.as_u64())
-            .map(|ms| (ms as f64 / 1000.0).round() as u32)
-            .unwrap_or(180);
+            .map(|ms| (ms as f64 / 1000.0).round() as u32);
 
         if title.is_empty() {
             return Ok(None);
@@ -697,8 +1184,9 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
         return Ok(Some(ScrapedResult::Track(ScrapedTrackItem {
             title,
             artist,
-            album: Some(album),
-            duration: Some(duration),
+            album,
+            album_artist: None,
+            duration,
             cover_url,
             preview_url,
             release_year,
@@ -714,6 +1202,92 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
             .filter(|s| !s.trim().is_empty())
             .unwrap_or("Spotify Collection"),
     );
+
+    // Preferred path for playlists: one paginated Pathfinder call instead of
+    // one embed-page fetch per track. Falls through to the existing
+    // embed+spclient path below if the token, client-token, or response shape aren't there
+    if entity_type == "playlist" {
+        match (anon_access_token.as_deref(), spotify_client_token()) {
+            (Some(token), Some(client_token)) => {
+                match resolve_playlist_via_pathfinder(&entity_id, token, &client_token).await {
+                    Some(tracks) => {
+                        println!(
+                            "[Spotify Scraper] resolved {} tracks via pathfinder fetchPlaylist",
+                            tracks.len()
+                        );
+                        return Ok(Some(ScrapedResult::Playlist {
+                            playlist_name,
+                            is_album: false,
+                            tracks,
+                        }));
+                    }
+                    None => {
+                        println!(
+                            "[Spotify Scraper] pathfinder fetchPlaylist unavailable/failed — \
+                             falling back to embed+spclient path"
+                        );
+                    }
+                }
+            }
+            (None, _) => {
+                println!(
+                    "[Spotify Scraper] pathfinder skipped: no anon access token extracted \
+                     from embed page __NEXT_DATA__ — falling back to embed+spclient path"
+                );
+            }
+            (_, None) => {
+                println!(
+                    "[Spotify Scraper] pathfinder skipped: no client token set (paste one in \
+                     from devtools) — falling back to embed+spclient path"
+                );
+            }
+        }
+    }
+
+    if entity_type == "album" {
+        // Preferred path: one paginated Pathfinder getAlbum call. Tried here,
+        // before any of the embed-page-derived fallback data (year, cover)
+        // below is computed, so a successful resolution never pays for the
+        // resolve_album_year/og:image network calls it doesn't need —
+        // parse_pathfinder_album_page already sets release_year/cover_url
+        // per track from the Pathfinder response itself.
+        match (anon_access_token.as_deref(), spotify_client_token()) {
+            (Some(token), Some(client_token)) => {
+                match resolve_album_via_pathfinder(&entity_id, token, &client_token).await {
+                    Some((album_name, tracks)) => {
+                        println!(
+                            "[Spotify Scraper] resolved {} tracks via pathfinder getAlbum",
+                            tracks.len()
+                        );
+                        return Ok(Some(ScrapedResult::Playlist {
+                            playlist_name: album_name,
+                            is_album: true,
+                            tracks,
+                        }));
+                    }
+                    None => {
+                        println!(
+                            "[Spotify Scraper] pathfinder getAlbum unavailable/failed — \
+                             falling back to embed+page-fallback path"
+                        );
+                    }
+                }
+            }
+            (None, _) => {
+                println!(
+                    "[Spotify Scraper] pathfinder skipped: no anon access token extracted \
+                     from embed page __NEXT_DATA__ — falling back to embed+page-fallback path"
+                );
+            }
+            (_, None) => {
+                println!(
+                    "[Spotify Scraper] pathfinder skipped: no client token set — \
+                     falling back to embed+page-fallback path"
+                );
+            }
+        }
+    }
+
     let raw_tracks = entity
         .get("trackList")
         .and_then(|v| v.as_array())
@@ -727,59 +1301,164 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
         None => fetch_page_og_image(&url).await,
     };
 
-    let mut tracks = Vec::with_capacity(raw_tracks.len());
-    let mut track_ids: Vec<Option<String>> = Vec::with_capacity(raw_tracks.len());
-    let mut album_is_placeholder: Vec<bool> = Vec::with_capacity(raw_tracks.len());
-    for t in &raw_tracks {
-        track_ids.push(track_id_from_entry(t));
-        let t_title = decode_html(
-            t.get("title")
-                .or_else(|| t.get("name"))
+    if raw_tracks.is_empty() {
+        return Ok(None);
+    }
+
+    if entity_type == "album" {
+        // Same album-level artist extraction as the pathfinder path above,
+        // `track_artists` already handles this exact embed schema shape
+        // (`artists: [{name}]`) since the entity itself is the album here.
+        let album_artist = track_artists(entity);
+        let mut tracks = Vec::with_capacity(raw_tracks.len());
+        for t in &raw_tracks {
+            let t_title = decode_html(
+                t.get("title")
+                    .or_else(|| t.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown Track"),
+            );
+            let t_artist = if let Some(sub) = t.get("subtitle").and_then(|v| v.as_str()) {
+                decode_html(sub)
+            } else if let Some(artists) = t.get("artists").and_then(|v| v.as_array()) {
+                decode_html(
+                    &artists
+                        .iter()
+                        .filter_map(|a| a.get("name").and_then(|n| n.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+            } else {
+                "Unknown Artist".to_string()
+            };
+            let duration = t
+                .get("duration")
+                .and_then(|v| v.as_u64())
+                .map(|ms| (ms as f64 / 1000.0).round() as u32);
+            let preview_url = t
+                .pointer("/audioPreview/url")
                 .and_then(|v| v.as_str())
-                .unwrap_or("Unknown Track"),
-        );
-        let t_artist = if let Some(sub) = t.get("subtitle").and_then(|v| v.as_str()) {
-            decode_html(sub)
-        } else if let Some(artists) = t.get("artists").and_then(|v| v.as_array()) {
-            decode_html(
-                &artists
-                    .iter()
-                    .filter_map(|a| a.get("name").and_then(|n| n.as_str()))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            )
-        } else {
-            "Unknown Artist".to_string()
-        };
-        let (t_album, is_placeholder_album) = if entity_type == "album" {
-            (Some(playlist_name.clone()), false)
-        } else if let Some(a) = t.pointer("/album/name").and_then(|v| v.as_str()) {
-            (Some(decode_html(a)), false)
-        } else {
-            (None, true)
-        };
-        album_is_placeholder.push(is_placeholder_album);
-        let duration = t
-            .get("duration")
+                .map(String::from);
+            let cover_url = best_cover_url(t).or_else(|| entity_cover_url.clone());
+
+            tracks.push(ScrapedTrackItem {
+                title: t_title,
+                artist: t_artist,
+                album: Some(playlist_name.clone()),
+                album_artist: album_artist.clone(),
+                duration,
+                cover_url,
+                preview_url,
+                release_year: playlist_level_year.clone(),
+            });
+        }
+
+        return Ok(Some(ScrapedResult::Playlist {
+            playlist_name,
+            is_album: true,
+            tracks,
+        }));
+    }
+
+    let mut track_ids: Vec<Option<String>> = Vec::with_capacity(raw_tracks.len());
+    for t in &raw_tracks {
+        let track_id = track_id_from_entry(t);
+        if track_id.is_none() {
+            let t_title = decode_html(
+                t.get("title")
+                    .or_else(|| t.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown Track"),
+            );
+            println!(
+                "[Spotify Scraper] Playlist entry \"{t_title}\": could not extract a track id \
+                 (no usable uri/id) — will fall back to playlist-level data for this entry"
+            );
+        }
+        track_ids.push(track_id);
+    }
+
+    if let Some(token) = anon_access_token.as_deref() {
+        if let Some(all_ids) = fetch_playlist_track_ids_spclient(&entity_id, token).await {
+            if all_ids.len() > track_ids.len() {
+                println!(
+                    "[Spotify Scraper] Embed had {} tracks; spclient reports {} — resolving all of them",
+                    track_ids.len(),
+                    all_ids.len()
+                );
+                track_ids = all_ids.into_iter().map(Some).collect();
+            }
+        }
+    }
+
+    let semaphore = Arc::new(Semaphore::new(PLAYLIST_CONCURRENCY));
+    let mut handles = Vec::with_capacity(track_ids.len());
+    for (i, track_id) in track_ids.iter().cloned().enumerate() {
+        let Some(id) = track_id else { continue };
+        let sem = semaphore.clone();
+        handles.push(tokio::spawn(async move {
+            let _permit = sem.acquire_owned().await.ok();
+            let resolved = resolve_track_as_single(&id).await;
+            (i, resolved)
+        }));
+    }
+    let mut single_resolved: Vec<Option<ScrapedTrackItem>> = vec![None; track_ids.len()];
+    for handle in handles {
+        if let Ok((i, item)) = handle.await {
+            single_resolved[i] = item;
+        }
+    }
+
+    let mut tracks = Vec::with_capacity(track_ids.len());
+    for (i, _track_id) in track_ids.iter().enumerate() {
+        let raw = raw_tracks.get(i);
+        let single = single_resolved[i].take();
+
+        let title = raw
+            .and_then(|t| t.get("title").or_else(|| t.get("name")))
+            .and_then(|v| v.as_str())
+            .map(decode_html)
+            .or_else(|| single.as_ref().map(|s| s.title.clone()))
+            .unwrap_or_else(|| "Unknown Track".to_string());
+        let artist = raw
+            .and_then(|t| t.get("subtitle").and_then(|v| v.as_str()))
+            .map(decode_html)
+            .or_else(|| single.as_ref().map(|s| s.artist.clone()))
+            .unwrap_or_else(|| "Unknown Artist".to_string());
+        let duration = raw
+            .and_then(|t| t.get("duration"))
             .and_then(|v| v.as_u64())
             .map(|ms| (ms as f64 / 1000.0).round() as u32)
-            .unwrap_or(180);
-        let preview_url = t
-            .pointer("/audioPreview/url")
+            .or_else(|| single.as_ref().and_then(|s| s.duration));
+        let preview_url = raw
+            .and_then(|t| t.pointer("/audioPreview/url"))
             .and_then(|v| v.as_str())
-            .map(String::from);
-        let cover_url = best_cover_url(t);
-        let release_year = if entity_type == "album" {
-            playlist_level_year.clone()
-        } else {
-            extract_release_year(t).or_else(|| playlist_level_year.clone())
-        };
+            .map(String::from)
+            .or_else(|| single.as_ref().and_then(|s| s.preview_url.clone()));
+
+        let album = single.as_ref().and_then(|s| s.album.clone());
+        let cover_url = single
+            .as_ref()
+            .and_then(|s| s.cover_url.clone())
+            .or_else(|| entity_cover_url.clone());
+        let release_year = single
+            .as_ref()
+            .and_then(|s| s.release_year.clone())
+            .or_else(|| playlist_level_year.clone());
+
+        if single.is_none() {
+            println!(
+                "[Spotify Scraper] Track {i} ({title}): per-track resolution failed — \
+                 using playlist-level fallback for cover/year, album left blank"
+            );
+        }
 
         tracks.push(ScrapedTrackItem {
-            title: t_title,
-            artist: t_artist,
-            album: t_album,
-            duration: Some(duration),
+            title,
+            artist,
+            album,
+            album_artist: None,
+            duration,
             cover_url,
             preview_url,
             release_year,
@@ -790,148 +1469,9 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
         return Ok(None);
     }
 
-    // Playlists over ~100 tracks: embed trackList is truncated. Use the
-    // anonymous token from __NEXT_DATA__ + spclient for the full ordered
-    // URI list, then fill missing tracks via per-track embeds.
-    if entity_type == "playlist" {
-        if let Some(token) = anon_access_token.as_deref() {
-            if let Some(all_ids) = fetch_playlist_track_ids_spclient(&entity_id, token).await {
-                if all_ids.len() > tracks.len() {
-                    println!(
-                        "[Spotify Scraper] Embed had {} tracks; spclient reports {} — fetching remainder",
-                        tracks.len(),
-                        all_ids.len()
-                    );
-
-                    let mut by_id: std::collections::HashMap<String, (ScrapedTrackItem, bool)> =
-                        std::collections::HashMap::new();
-                    for (i, tid) in track_ids.iter().enumerate() {
-                        if let Some(id) = tid {
-                            let placeholder = album_is_placeholder.get(i).copied().unwrap_or(false);
-                            by_id.insert(id.clone(), (tracks[i].clone(), placeholder));
-                        }
-                    }
-
-                    let missing: Vec<String> = all_ids
-                        .iter()
-                        .filter(|id| !by_id.contains_key(id.as_str()))
-                        .cloned()
-                        .collect();
-
-                    let semaphore = Arc::new(Semaphore::new(COVER_FETCH_CONCURRENCY));
-                    let mut handles = Vec::with_capacity(missing.len());
-                    for tid in missing {
-                        let sem = semaphore.clone();
-                        handles.push(tokio::spawn(async move {
-                            let _permit = sem.acquire_owned().await.ok();
-                            let item = fetch_track_item_from_embed(tid.clone()).await;
-                            (tid, item)
-                        }));
-                    }
-                    for handle in handles {
-                        if let Ok((tid, Some(item))) = handle.await {
-                            let placeholder = item.album.is_none();
-                            by_id.insert(tid, (item, placeholder));
-                        }
-                    }
-
-                    // Rebuild in spclient order
-                    let mut ordered = Vec::with_capacity(all_ids.len());
-                    let mut ordered_placeholder = Vec::with_capacity(all_ids.len());
-                    for id in &all_ids {
-                        if let Some((item, placeholder)) = by_id.remove(id) {
-                            ordered.push(item);
-                            ordered_placeholder.push(placeholder);
-                        } else {
-                            ordered.push(ScrapedTrackItem {
-                                title: format!("Track {id}"),
-                                artist: "Unknown Artist".to_string(),
-                                album: None,
-                                duration: Some(180),
-                                cover_url: None,
-                                preview_url: None,
-                                release_year: playlist_level_year.clone(),
-                            });
-                            ordered_placeholder.push(true);
-                        }
-                    }
-                    tracks = ordered;
-                    album_is_placeholder = ordered_placeholder;
-                    track_ids = all_ids.into_iter().map(Some).collect();
-                }
-            }
-        }
-    }
-
-    // For playlists: fetch each track's own album name and cover art when
-    // either is missing. Album stays blank (None) when recovery fails —
-    // never fall back to the playlist name.
-    if entity_type != "album" {
-        let semaphore = Arc::new(Semaphore::new(COVER_FETCH_CONCURRENCY));
-        let mut handles = Vec::with_capacity(track_ids.len());
-        for (i, track_id) in track_ids.into_iter().enumerate() {
-            let needs_cover = tracks.get(i).and_then(|t| t.cover_url.as_ref()).is_none();
-            let needs_album = album_is_placeholder.get(i).copied().unwrap_or(false);
-            if !needs_cover && !needs_album {
-                handles.push(tokio::spawn(async move { (i, None) }));
-                continue;
-            }
-            let sem = semaphore.clone();
-            let token = anon_access_token.clone();
-            handles.push(tokio::spawn(async move {
-                let meta = fetch_track_embed_meta(sem, track_id, token).await;
-                (i, meta)
-            }));
-        }
-        for handle in handles {
-            match handle.await {
-                Ok((i, Some(meta))) => {
-                    if let Some(t) = tracks.get_mut(i) {
-                        if t.cover_url.is_none() {
-                            if let Some(cover) = meta.cover_url {
-                                t.cover_url = Some(cover);
-                            }
-                        }
-                        if album_is_placeholder.get(i).copied().unwrap_or(false) {
-                            if let Some(album) = meta.album {
-                                t.album = Some(album);
-                            } else {
-                                t.album = None;
-                                println!(
-                                    "[Spotify Scraper] Track {i} ({}): per-track fetch \
-                                     succeeded but had no album name — leaving album blank",
-                                    t.title
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok((i, None)) => {
-                    if album_is_placeholder.get(i).copied().unwrap_or(false) {
-                        if let Some(t) = tracks.get_mut(i) {
-                            t.album = None;
-                            println!(
-                                "[Spotify Scraper] Track {i} ({}): per-track embed fetch \
-                                 failed (network/rate-limit/parse) — leaving album blank",
-                                t.title
-                            );
-                        }
-                    }
-                }
-                Err(_) => {}
-            }
-        }
-    }
-
-    for t in tracks.iter_mut() {
-        if t.cover_url.is_none() {
-            t.cover_url = entity_cover_url.clone();
-        }
-    }
-
     Ok(Some(ScrapedResult::Playlist {
         playlist_name,
-        is_album: entity_type == "album",
+        is_album: false,
         tracks,
     }))
 }
