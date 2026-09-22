@@ -49,7 +49,8 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
   ];
 
   const bitrates: { value: Bitrate; label: string; desc: string }[] = [
-    { value: '128k', label: '128 Kbps', desc: 'Standard quality, smaller file' },
+    { value: '128k', label: '128 Kbps', desc: 'Basic quality, smaller file' },
+    { value: '192k', label: '192 Kbps', desc: 'Standard quality, smaller file' },
     { value: '256k', label: '256 Kbps', desc: 'High quality, balanced file size' },
     { value: '320k', label: '320 Kbps', desc: 'Extreme quality, best for MP3/M4A' },
     { value: 'lossless', label: 'Lossless', desc: 'Original studio master quality' },
@@ -66,6 +67,16 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
       desc: 'Highest available video feed with premium audio',
     },
     {
+      value: '2160p',
+      label: 'Ultra HD (4K / 2160p)',
+      desc: '3840x2160 resolution ultra high-definition video stream',
+    },
+    {
+      value: '1440p',
+      label: 'Quad HD (2K / 1440p)',
+      desc: '2560x1440 resolution enhanced high-definition video stream',
+    },
+    {
       value: '1080p',
       label: 'Full HD (1080p)',
       desc: '1920x1080 resolution high-definition video stream',
@@ -75,11 +86,6 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
       value: '480p',
       label: 'Standard Quality (480p)',
       desc: '854x480 standard definition video stream',
-    },
-    {
-      value: '360p',
-      label: 'Compact Quality (360p)',
-      desc: '640x360 compact video (optimized for bandwidth)',
     },
   ];
 
@@ -263,7 +269,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
           <span className="block text-xs text-rust leading-relaxed font-mono mb-3">
             Choose how output filenames are structured when saved or zipped.
           </span>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
             {(
               [
                 {
@@ -275,6 +281,11 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                   id: 'number_artist_title',
                   label: '01 - Artist - Title',
                   example: '01 - Daft Punk - One More Time.mp3',
+                },
+                {
+                  id: 'number_title',
+                  label: '01 - Title',
+                  example: '01 - One More Time.mp3',
                 },
                 { id: 'title', label: 'Title Only', example: 'One More Time.mp3' },
               ] satisfies {
@@ -301,6 +312,62 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
               >
                 <span
                   className={`text-xs font-bold tracking-tight ${settings.namingPattern === pattern.id ? 'text-rust' : ''} `}
+                >
+                  {pattern.label}
+                </span>
+                <span className="text-[9px] text-cream/60 mt-1 truncate">{pattern.example}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Folder Naming Pattern */}
+        <div className="mb-5">
+          <span className="block text-xs font-black uppercase tracking-wider text-cream mb-1">
+            Folder Naming Pattern
+          </span>
+          <span className="block text-xs text-rust leading-relaxed font-mono mb-3">
+            Choose how the containing folder is named for an album download. Playlists can&apos;t be
+            attributed to one album or artist, so this only applies to albums.
+          </span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+            {(
+              [
+                {
+                  id: 'album_artist',
+                  label: 'Album - Artist',
+                  example: 'Discovery - Daft Punk',
+                },
+                {
+                  id: 'year_album',
+                  label: 'Year - Album',
+                  example: '2001 - Discovery',
+                },
+                { id: 'album', label: 'Album Only', example: 'Discovery' },
+              ] satisfies {
+                id: NonNullable<DownloadSettings['folderNamingPattern']>;
+                label: string;
+                example: string;
+              }[]
+            ).map(pattern => (
+              <button
+                key={pattern.id}
+                type="button"
+                id={`btn-folder-naming-${pattern.id}`}
+                onClick={() =>
+                  onChange({
+                    ...settings,
+                    folderNamingPattern: pattern.id,
+                  })
+                }
+                className={`p-3 text-left border-2 rounded-md transition-all flex flex-col justify-between ${
+                  (settings.folderNamingPattern || 'album_artist') === pattern.id
+                    ? 'border-rust'
+                    : 'scale-98 opacity-70 hover:opacity-100'
+                }`}
+              >
+                <span
+                  className={`text-xs font-bold tracking-tight ${settings.folderNamingPattern === pattern.id ? 'text-rust' : ''} `}
                 >
                   {pattern.label}
                 </span>

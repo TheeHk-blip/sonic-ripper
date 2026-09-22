@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { X, Tv, ChevronUp, ChevronDown } from 'lucide-react';
 import { Track } from '../types';
@@ -8,12 +8,55 @@ interface MediaPlayerProps {
   onClose: () => void;
 }
 
+const EMBED_LOAD_TIMEOUT_MS = 6000;
+
 function extractYouTubeId(url: string | null | undefined): string | null {
   if (!url) return null;
   const match = url.match(
     /(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/
   );
   return match ? match[1] : null;
+}
+
+function YouTubeEmbedFrame({ src, title }: { src: string; title: string }) {
+  const [embedFailed, setEmbedFailed] = useState(false);
+  const loadTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    loadTimerRef.current = window.setTimeout(() => {
+      setEmbedFailed(true);
+    }, EMBED_LOAD_TIMEOUT_MS);
+    return () => {
+      if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
+    };
+  }, []);
+
+  const handleIframeLoad = () => {
+    if (loadTimerRef.current) {
+      clearTimeout(loadTimerRef.current);
+      loadTimerRef.current = null;
+    }
+  };
+
+  if (embedFailed) {
+    return (
+      <div className="w-full h-full border-2 border-gold rounded-sm bg-brown flex flex-col items-center justify-center gap-3 text-center px-6">
+        <p className="text-xs text-white/70">This preview couldn&apos;t load.</p>
+      </div>
+    );
+  }
+
+  return (
+    <iframe
+      title={title}
+      src={src}
+      onLoad={handleIframeLoad}
+      className="w-full h-full border-2 border-gold rounded-sm"
+      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; microphone; camera; speaker-selection"
+      allowFullScreen
+      referrerPolicy="strict-origin-when-cross-origin"
+    />
+  );
 }
 
 export default function MediaPlayer({ track, onClose }: MediaPlayerProps) {
@@ -46,7 +89,7 @@ export default function MediaPlayer({ track, onClose }: MediaPlayerProps) {
       animate={{ y: 0, opacity: 1 }}
       exit={{ y: 100, opacity: 0 }}
       transition={{ type: 'spring', damping: 25, stiffness: 120 }}
-      className={`${isVideoExpanded ? '' : 'mt-60'} fixed bottom-0 left-0 right-0 z-10  bg-brown /95 backdrop-blur-md shadow-2xl p-4 sm:p-6`}
+      className={`${isVideoExpanded ? '' : 'mt-60'} fixed bottom-0 left-0 right-0 z-10  bg-brown/95 backdrop-blur-md shadow-2xl p-4 sm:p-6`}
     >
       <div className="max-w-7xl mx-auto flex flex-col gap-4">
         {/* Video frame (YouTube only) */}
@@ -58,18 +101,11 @@ export default function MediaPlayer({ track, onClose }: MediaPlayerProps) {
               opacity: isVideoExpanded ? 1 : 0,
             }}
             transition={{ duration: 0.2 }}
-            className={`w-full max-w-2xl mx-auto aspect-video relative overflow-hidden shadow-2xl ${
+            className={`w-full mx-auto aspect-video relative overflow-hidden shadow-2xl ${
               !isVideoExpanded ? 'pointer-events-none invisible h-0' : ''
             }`}
           >
-            <iframe
-              title={track.title}
-              src={workerEmbedSrc}
-              className="w-full h-full border-0"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; microphone; camera; speaker-selection"
-              allowFullScreen
-              referrerPolicy="strict-origin-when-cross-origin"
-            />
+            <YouTubeEmbedFrame key={workerEmbedSrc} src={workerEmbedSrc} title={track.title} />
           </motion.div>
         )}
 

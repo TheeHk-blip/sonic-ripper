@@ -6,6 +6,7 @@ interface TrackRowProps {
   track: Track;
   index: number;
   onDownloadSingle: (track: Track) => void;
+  onCancelSingle: (track: Track) => void;
   onPlayTrack: (track: Track) => void;
   activeTrackId?: string | null;
   isBatchDownloading?: boolean;
@@ -16,6 +17,7 @@ export default function TrackRow({
   track,
   index,
   onDownloadSingle,
+  onCancelSingle,
   onPlayTrack,
   activeTrackId,
   isBatchDownloading,
@@ -43,9 +45,9 @@ export default function TrackRow({
       transition={{ duration: 0.2 }}
       className="flex flex-col border-b border-olive py-1 md:py-3"
     >
-      <div className="flex flex-row items-center w-full gap-3">
+      <div className="flex flex-row items-center w-full gap-4">
         {/* Track No & Album Cover */}
-        <div className="flex flex-row w-20 md:w-30 gap-2 items-center mr-3">
+        <div className="flex flex-row w-20 md:w-25 gap-2 items-center justify-center">
           <span>{trackNumStr}</span>
           <div
             onClick={() => onPlayTrack(track)}
@@ -75,7 +77,10 @@ export default function TrackRow({
                   />
                 </div>
               ) : (
-                <Play className="size-4 transition-colors" />
+                <Play
+                  className="size-4 text-gold backdrop-blur-2xl p-0,5 rounded-xs transition-colors"
+                  style={{ strokeWidth: 3 }}
+                />
               )}
             </div>
           </div>
@@ -84,14 +89,18 @@ export default function TrackRow({
         {/* Track Metadata */}
         <div className="flex flex-col min-w-0 justify-between md:gap-2 w-full">
           <div className="flex flex-col">
-            <span className="text-[14px] md:text-lg truncate">{track.title}</span>
-            <span className="text-xs md:text-sm italic truncate">{track.artist}</span>
+            <span className="text-[14px] md:text-lg font-thin truncate">{track.title}</span>
+            <span className="text-xs md:text-sm font-semibold truncate">{track.artist}</span>
           </div>
           <div className="flex flex-col md:flex-row w-full">
             <div className="flex gap-1 text-sm">
-              <span className="truncate">{track.album}</span>
-              <span>•</span>
-              <span>{track.year}</span>
+              {track.album && (
+                <>
+                  <span className="truncate text-rust">{track.album}</span>
+                  <span>•</span>
+                </>
+              )}
+              <span className="text-rust">{track.year}</span>
               <span>•</span>
               <span className="flex flex-row gap-2 ml-2 items-center text-rust">
                 <Clock className="size-4" />
@@ -103,21 +112,32 @@ export default function TrackRow({
 
         {/* Action Button */}
         <div className="flex items-center w-20 ml-auto transition-all duration-300">
-          <button
-            type="button"
-            onClick={() => onDownloadSingle(track)}
-            disabled={isProcessing || isBatchDownloading || isFolderDownloading}
-            className={`rounded-sm p-2 hover:scale-105 cursor-pointer ${
-              track.status === 'completed' ? 'bg-gold' : 'bg-charcoal'
-            }`}
-            title="Download Song"
-          >
-            {track.status === 'completed' ? (
-              <CheckCircle className="size-5" />
-            ) : (
-              <Download className="size-5 text-cream hover:text-olive" />
-            )}
-          </button>
+          {isProcessing && !isBatchDownloading && !isFolderDownloading ? (
+            <button
+              type="button"
+              onClick={() => onCancelSingle(track)}
+              className="rounded-sm p-2 hover:scale-105 cursor-pointer bg-charcoal"
+              title="Cancel Download"
+            >
+              <XCircle className="size-5 text-cream hover:text-rust" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onDownloadSingle(track)}
+              disabled={isProcessing || isBatchDownloading || isFolderDownloading}
+              className={`rounded-sm p-2 hover:scale-105 cursor-pointer ${
+                track.status === 'completed' ? 'bg-gold' : 'bg-charcoal'
+              }`}
+              title="Download Song"
+            >
+              {track.status === 'completed' ? (
+                <CheckCircle className="size-5" />
+              ) : (
+                <Download className="size-5 text-cream hover:text-olive" />
+              )}
+            </button>
+          )}
         </div>
       </div>
 

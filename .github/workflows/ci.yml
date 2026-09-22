@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  enforce-toolchain:
+    name: Enforce pnpm + Node versions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail if npm or yarn lockfiles are present
+        run: |
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ] || [ -f yarn.lock ]; then
+            echo "::error::Found an npm/yarn lockfile. This repo uses pnpm only — remove package-lock.json / yarn.lock and commit pnpm-lock.yaml instead."
+            exit 1
+          fi
+
+      - name: Fail if pnpm-lock.yaml is missing
+        run: |
+          if [ ! -f pnpm-lock.yaml ]; then
+            echo "::error::pnpm-lock.yaml not found. Run 'pnpm install' locally and commit the lockfile."
+            exit 1
+          fi
+
+      - name: Fail if engines.node is missing from package.json
+        run: |
+          if ! grep -q '"engines"' package.json; then
+            echo "::error::package.json is missing an \"engines.node\" field."
+            exit 1
+          fi
+
+  build:
+    name: Install, lint & build
+    needs: enforce-toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile, engine-strict)
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Build
+        run: pnpm build

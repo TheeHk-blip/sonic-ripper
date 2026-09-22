@@ -30,7 +30,7 @@
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (>= 20 recommended)
+- [Node.js](https://nodejs.org/) (>= 26 recommended)
 - [pnpm](https://pnpm.io/) (package manager)
 - [Rust](https://rust-lang.org/) (for Tauri backend, via `rustup`)
 - Tauri CLI: `pnpm tauri`

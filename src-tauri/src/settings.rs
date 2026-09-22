@@ -4,12 +4,17 @@ use tauri::{AppHandle, Manager};
 use tokio::fs;
 
 use crate::error::{AppError, AppResult};
+use crate::youtube;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     #[serde(default)]
     pub download_folder: Option<String>,
+    #[serde(default)]
+    pub youtube_cookies: Option<String>,
+    #[serde(default)]
+    pub cookies_from_browser: Option<String>,
 }
 
 fn settings_path(app: &AppHandle) -> AppResult<PathBuf> {
@@ -69,4 +74,42 @@ pub async fn set_download_folder(app: AppHandle, folder: String) -> AppResult<Ap
     settings.download_folder = Some(folder);
     save_settings(&app, &settings).await?;
     Ok(settings)
+}
+
+#[tauri::command]
+pub async fn set_youtube_cookies(
+    app: AppHandle,
+    cookies: Option<String>,
+) -> AppResult<AppSettings> {
+    let cookies = cookies.filter(|s| !s.trim().is_empty());
+    let mut settings = load_settings(&app).await?;
+    settings.youtube_cookies = cookies;
+    save_settings(&app, &settings).await?;
+    youtube::set_youtube_cookies(settings.youtube_cookies.clone());
+    Ok(settings)
+}
+
+#[tauri::command]
+pub async fn set_cookies_from_browser(
+    app: AppHandle,
+    browser: Option<String>,
+) -> AppResult<AppSettings> {
+    let browser = browser.filter(|s| !s.trim().is_empty());
+    let mut settings = load_settings(&app).await?;
+    settings.cookies_from_browser = browser;
+    save_settings(&app, &settings).await?;
+    youtube::set_cookies_from_browser(settings.cookies_from_browser.clone());
+    Ok(settings)
+}
+
+pub async fn sync_persisted_youtube_cookies(app: &AppHandle) {
+    match load_settings(app).await {
+        Ok(settings) => {
+            youtube::set_youtube_cookies(settings.youtube_cookies);
+            youtube::set_cookies_from_browser(settings.cookies_from_browser);
+        }
+        Err(e) => {
+            eprintln!("[Settings] failed to load persisted cookies for analyze: {e}");
+        }
+    }
 }

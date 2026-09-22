@@ -47,7 +47,7 @@ export default {
 </head>
 <body>
   <iframe
-    src="https://www.youtube.com/embed/${safeVideoId}?autoplay=1&rel=0&playsinline=1"
+    src="https://www.youtube-nocookie.com/embed/${safeVideoId}?autoplay=1&rel=0&playsinline=1"
     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
     allowfullscreen
     referrerpolicy="strict-origin-when-cross-origin"
