@@ -43,7 +43,7 @@ export default function TrackRow({
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
-      className="flex flex-col border-b border-olive py-1 md:py-3"
+      className="flex flex-1 flex-col border-b border-olive px-5 py-1 md:py-3"
     >
       <div className="flex flex-row items-center w-full gap-4">
         {/* Track No & Album Cover */}

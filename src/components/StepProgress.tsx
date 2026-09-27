@@ -8,16 +8,6 @@ interface StepProgressProps {
   current: FlowStep;
 }
 
-const themeColor = (name: string) => {
-  if (typeof window === 'undefined') return;
-  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return value;
-};
-
-const BRAND = themeColor('--color-charcoal');
-const BRAND_ACTIVE_BG = themeColor('--color-olive');
-const BORDER_IDLE = themeColor('--color-cream');
-
 const STEPS: { key: FlowStep; label: string; icon: React.ReactNode }[] = [
   { key: 'source', label: 'Add Source', icon: <Link2 className="size-5" /> },
   { key: 'configure', label: 'Configure', icon: <Sliders className="size-5" /> },
@@ -28,7 +18,7 @@ export default function StepProgress({ current }: StepProgressProps) {
   const currentIndex = STEPS.findIndex(s => s.key === current);
 
   return (
-    <div className="flex items-center w-full bg-olive/35 rounded-2xl px-3 py-2 mb-2 mt-5">
+    <div className="flex items-center w-full bg-olive/40 rounded-sm px-3 py-2">
       {STEPS.map((s, idx) => {
         const isDone = idx < currentIndex;
         const isActive = idx === currentIndex;
@@ -37,13 +27,10 @@ export default function StepProgress({ current }: StepProgressProps) {
           <React.Fragment key={s.key}>
             <div className="flex items-center gap-3 shrink-0" id={`step-node-${s.key}`}>
               <div className="relative w-9 h-9 flex items-center justify-center shrink-0">
-                <motion.div
-                  className="absolute inset-0 rounded-sm bg-charcoal"
-                  animate={{
-                    borderColor: isDone || isActive ? BRAND : BORDER_IDLE,
-                    backgroundColor: isDone ? BRAND : isActive ? BRAND_ACTIVE_BG : 'transparent',
-                  }}
-                  transition={{ duration: 0.35, ease: 'easeOut' }}
+                <div
+                  className={`absolute inset-0 rounded-sm transition-colors duration-300 ease-out ${
+                    isDone ? 'bg-charcoal' : isActive ? 'bg-olive' : 'bg-transparent'
+                  }`}
                 />
                 <span
                   className={`relative z-10 ${isDone ? 'text-gold' : isActive ? 'text-cream' : 'text-rust'}`}
@@ -52,13 +39,16 @@ export default function StepProgress({ current }: StepProgressProps) {
                 </span>
               </div>
               <div className="hidden sm:block">
-                <p
+                <motion.p
+                  animate={{ scale: isActive ? 1.08 : 1 }}
+                  transition={{ duration: 0.35, ease: 'easeOut' }}
+                  style={{ transformOrigin: 'left center' }}
                   className={`font-thin transition-colors duration-300 ${
-                    isActive ? 'text-gold text-lg' : isDone ? 'text-rust' : 'text-cream'
+                    isActive ? 'text-gold' : isDone ? 'text-rust' : 'text-cream'
                   }`}
                 >
                   {s.label}
-                </p>
+                </motion.p>
               </div>
             </div>
 

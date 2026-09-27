@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SonicRipper",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "identifier": "com.sonicripper.com",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -12,10 +12,16 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Sonic Ripper",
         "width": 800,
         "height": 600,
-        "zoomHotkeysEnabled": true
+        "minWidth": 600,
+        "minHeight": 400,
+        "resizable": true,
+        "zoomHotkeysEnabled": true,
+        "decorations": false,
+        "titleBarStyle": "Overlay"
       }
     ],
     "security": {
@@ -42,6 +48,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/sonic-yt-dlp", "binaries/sonic-ffmpeg"]
+    "externalBin": ["binaries/sonic-yt-dlp", "binaries/sonic-ffmpeg", "binaries/sonic-deno"],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZCMzlBQ0NFODRCRjFBMjQKUldRa0dyK0V6cXc1YTVRWGpUL2NrRGN3TFZnVTAxdDVuZUxPTTJSdVE5VEdlYXBLVjJ2UWY0VmQK",
+      "endpoints": ["https://github.com/TheeHk-blip/sonic/releases/latest/download/latest.json"]
+    }
   }
 }

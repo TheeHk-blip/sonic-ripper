@@ -34,6 +34,7 @@ export type Bitrate = '128k' | '192k' | '256k' | '320k' | 'lossless';
 export interface DownloadSettings {
   format: AudioFormat;
   bitrate: Bitrate;
+  concurrency?: number;
   youtubeCookies?: string;
   cookiesFromBrowser?: string;
   sampleRate?: '44100' | '48000';

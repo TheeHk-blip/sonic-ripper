@@ -2,6 +2,7 @@ mod cancel;
 mod download;
 mod error;
 mod http;
+mod logger;
 mod models;
 mod settings;
 mod spotify;
@@ -55,6 +56,7 @@ fn get_album_hash_cmd() -> Option<String> {
 
 #[tauri::command]
 async fn analyze(app: AppHandle, url: String) -> Result<AnalyzeResult, AppError> {
+    logger::info(format!("analyze: {url}"));
     settings::sync_persisted_youtube_cookies(&app).await;
 
     if !spotify::looks_like_spotify_link(&url) {
@@ -75,11 +77,16 @@ async fn analyze(app: AppHandle, url: String) -> Result<AnalyzeResult, AppError>
         }
 
         if youtube::looks_like_youtube_link(&url) {
-            let tracks = youtube::resolve_youtube_url(&app, &url).await;
+            let mut tracks = youtube::resolve_youtube_url(&app, &url).await;
             if tracks.is_empty() {
                 return Err(AppError::TrackNotFound {
                     title: url.clone(),
                     artist: String::new(),
+                });
+            }
+            if tracks.len() == 1 {
+                return Ok(AnalyzeResult::Track {
+                    track: tracks.remove(0),
                 });
             }
             return Ok(AnalyzeResult::Playlist {
@@ -90,6 +97,7 @@ async fn analyze(app: AppHandle, url: String) -> Result<AnalyzeResult, AppError>
         }
 
         if youtube::looks_like_url(&url) {
+            logger::warn(format!("unsupported link: {url}"));
             return Err(AppError::UnsupportedLink(format!(
                 "\"{url}\" isn't a supported Spotify or YouTube link."
             )));
@@ -184,11 +192,28 @@ fn gen_id() -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(cancel::DownloadRegistry::default())
+        .setup(|app| {
+            logger::init(app.handle().clone());
+            let handle = app.handle().clone();
+            std::panic::set_hook(Box::new(move |info| {
+                let _ = handle.emit(
+                    "app-log",
+                    logger::LogLine {
+                        level: "error".into(),
+                        msg: info.to_string(),
+                        ts: chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                    },
+                );
+            }));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             analyze,
             download::download_track,
@@ -199,6 +224,7 @@ pub fn run() {
             settings::set_download_folder,
             settings::set_youtube_cookies,
             settings::set_cookies_from_browser,
+            settings::set_download_concurrency,
             set_spotify_client_token_cmd,
             get_spotify_client_token_cmd,
             set_pathfinder_hash_cmd,

@@ -9,6 +9,7 @@ use tauri_plugin_shell::ShellExt;
 use tokio::sync::Semaphore;
 use url::Url;
 
+use crate::logger;
 use crate::models::{ScrapedTrackItem, Track};
 use crate::AnalyzeProgress;
 
@@ -62,7 +63,7 @@ pub fn set_youtube_cookies(raw_cookies: Option<String>) {
             match std::fs::write(&path, &raw) {
                 Ok(()) => state.cookies_path = Some(path.to_string_lossy().into_owned()),
                 Err(e) => {
-                    eprintln!("[YouTube] failed to write cookies file: {e}");
+                    logger::warn(format!("[YouTube] failed to write cookies file: {e}"));
                     state.cookies_path = None;
                 }
             }
@@ -230,7 +231,7 @@ async fn run_yt_dlp_search(
     let sidecar = match app.shell().sidecar("sonic-yt-dlp") {
         Ok(cmd) => cmd,
         Err(e) => {
-            eprintln!("[YouTube] failed to resolve yt-dlp sidecar: {e}");
+            logger::warn(format!("[YouTube] failed to resolve yt-dlp sidecar: {e}"));
             return Vec::new();
         }
     };
@@ -248,16 +249,16 @@ async fn run_yt_dlp_search(
     let output = match output {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[YouTube] failed to spawn yt-dlp sidecar: {e}");
+            logger::warn(format!("[YouTube] Failed to spawn yt-dlp sidecar: {e}"));
             return Vec::new();
         }
     };
 
     if !output.status.success() {
-        eprintln!(
+        logger::warn(format!(
             "[YouTube] yt-dlp search exited non-zero for \"{query}\": {}",
             String::from_utf8_lossy(&output.stderr)
-        );
+        ));
     }
 
     String::from_utf8_lossy(&output.stdout)
@@ -270,7 +271,7 @@ async fn run_yt_dlp_music_search(app: &AppHandle, query: &str, limit: u32) -> Ve
     let sidecar = match app.shell().sidecar("sonic-yt-dlp") {
         Ok(cmd) => cmd,
         Err(e) => {
-            eprintln!("[YouTube] failed to resolve yt-dlp sidecar: {e}");
+            logger::warn(format!("[YouTube] Failed to resolve yt-dlp sidecar: {e}"));
             return Vec::new();
         }
     };
@@ -295,16 +296,16 @@ async fn run_yt_dlp_music_search(app: &AppHandle, query: &str, limit: u32) -> Ve
     let output = match output {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[YouTube] failed to spawn yt-dlp sidecar: {e}");
+            logger::warn(format!("[YouTube] Failed to spawn yt-dlp sidecar: {e}"));
             return Vec::new();
         }
     };
 
     if !output.status.success() {
-        eprintln!(
+        logger::warn(format!(
             "[YouTube] yt-dlp music search exited non-zero for \"{query}\": {}",
             String::from_utf8_lossy(&output.stderr)
-        );
+        ));
     }
 
     String::from_utf8_lossy(&output.stdout)
@@ -317,7 +318,7 @@ async fn run_yt_dlp_direct(app: &AppHandle, video_url: &str) -> Vec<YtDlpFlatEnt
     let sidecar = match app.shell().sidecar("sonic-yt-dlp") {
         Ok(cmd) => cmd,
         Err(e) => {
-            eprintln!("[YouTube] failed to resolve yt-dlp sidecar: {e}");
+            logger::warn(format!("[YouTube] Failed to resolve yt-dlp sidecar: {e}"));
             return Vec::new();
         }
     };
@@ -335,16 +336,16 @@ async fn run_yt_dlp_direct(app: &AppHandle, video_url: &str) -> Vec<YtDlpFlatEnt
     let output = match output {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[YouTube] failed to spawn yt-dlp sidecar: {e}");
+            logger::warn(format!("[YouTube] Failed to spawn yt-dlp sidecar: {e}"));
             return Vec::new();
         }
     };
 
     if !output.status.success() {
-        eprintln!(
+        logger::warn(format!(
             "[YouTube] yt-dlp direct resolve exited non-zero for \"{video_url}\": {}",
             String::from_utf8_lossy(&output.stderr)
-        );
+        ));
     }
 
     String::from_utf8_lossy(&output.stdout)
@@ -362,7 +363,7 @@ async fn run_yt_dlp_streaming(
     let sidecar = match app.shell().sidecar("sonic-yt-dlp") {
         Ok(cmd) => cmd,
         Err(e) => {
-            eprintln!("[YouTube] failed to resolve yt-dlp sidecar: {e}");
+            logger::warn(format!("[YouTube] Failed to resolve yt-dlp sidecar: {e}"));
             return Vec::new();
         }
     };
@@ -380,7 +381,7 @@ async fn run_yt_dlp_streaming(
     let (mut rx, _child) = match sidecar.args(args).spawn() {
         Ok(pair) => pair,
         Err(e) => {
-            eprintln!("[YouTube] failed to spawn yt-dlp sidecar: {e}");
+            logger::warn(format!("[YouTube] Failed to spawn yt-dlp sidecar: {e}"));
             return Vec::new();
         }
     };
@@ -418,14 +419,14 @@ async fn run_yt_dlp_streaming(
                 stderr_buf.push_str(&String::from_utf8_lossy(&bytes));
             }
             CommandEvent::Error(e) => {
-                eprintln!("[YouTube] yt-dlp process error: {e}");
+                logger::warn(format!("[YouTube] yt-dlp process error: {e}"));
             }
             CommandEvent::Terminated(payload) => {
                 if payload.code != Some(0) {
-                    eprintln!(
+                    logger::warn(format!(
                         "[YouTube] yt-dlp exited with code {:?}: {stderr_buf}",
                         payload.code
-                    );
+                    ));
                 }
                 break;
             }
@@ -1605,22 +1606,24 @@ async fn best_scored_match(
         .collect();
     scored.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
-    eprintln!(
+    logger::info(format!(
         "[Match] \"{title}\" by \"{artist}\" — expected duration {:?}s, expected album {:?}",
         expected_duration, expected_album
-    );
+    ));
     if scored.is_empty() {
-        eprintln!("[Match]   no candidates cleared title/artist/duration scoring");
+        logger::info(format!(
+            "[Match]   No candidates cleared title/artist/duration scoring"
+        ));
     }
     for (score, m) in &scored {
-        eprintln!(
-            "[Match]   score {:.3} | title=\"{}\" uploader=\"{}\" duration={:?}s | {}",
+        logger::info(format!(
+            "[Match]   Score {:.3} | title=\"{}\" uploader=\"{}\" duration={:?}s | {}",
             score,
             m.title.as_deref().unwrap_or("?"),
             m.uploader.as_deref().unwrap_or("?"),
             m.duration,
             m.url
-        );
+        ));
     }
 
     let expected_album = expected_album.map(str::trim).filter(|a| !a.is_empty());
@@ -1637,7 +1640,12 @@ async fn best_scored_match(
     let mut any_lookup_succeeded = false;
 
     for (score, candidate) in scored.iter().take(ALBUM_CHECK_TOP_N) {
-        let info = fetch_full_video_info(app, &candidate.video_id).await;
+        let info = fetch_full_video_info(
+            app,
+            &candidate.video_id,
+            candidate.title.as_deref().unwrap_or(&candidate.video_id),
+        )
+        .await;
         if info.is_some() {
             any_lookup_succeeded = true;
         }
@@ -1650,13 +1658,13 @@ async fn best_scored_match(
             title,
             artist,
         ) {
-            eprintln!(
-                "[Match]   real-title check (score {:.3}) \"{}\": resolved video is actually \"{}\" ({}) — rejecting, flat listing didn't match the id",
+            logger::info(format!(
+                "[Match]   Real-title check (score {:.3}) \"{}\": resolved video is actually \"{}\" ({}) — rejecting, flat listing didn't match the id",
                 score,
                 candidate.title.as_deref().unwrap_or("?"),
                 info.as_ref().and_then(|i| i.title.as_deref()).unwrap_or("?"),
                 info.as_ref().and_then(|i| i.uploader.as_deref()).unwrap_or("?"),
-            );
+            ));
             continue;
         }
 
@@ -1676,24 +1684,24 @@ async fn best_scored_match(
                     closest_by_duration = Some((diff, candidate.clone()));
                 }
                 if diff > DURATION_TOLERANCE_SECS {
-                    eprintln!(
-                        "[Match]   duration check (score {:.3}) \"{}\": real duration {}s vs expected {}s (diff {}s) — rejecting",
+                    logger::info(format!(
+                        "[Match]   Duration check (score {:.3}) \"{}\": real duration {}s vs expected {}s (diff {}s) — rejecting",
                         score,
                         candidate.title.as_deref().unwrap_or("?"),
                         real,
                         expected,
                         diff
-                    );
+                    ));
                     continue;
                 }
                 duration_confirmed = true;
             }
             (Some(_), None) => {
-                eprintln!(
-                    "[Match]   duration check (score {:.3}) \"{}\": real duration unavailable (lookup failed) — cannot confirm, rejecting",
+                logger::info(format!(
+                    "[Match]   Duration check (score {:.3}) \"{}\": real duration unavailable (lookup failed) — cannot confirm, rejecting",
                     score,
                     candidate.title.as_deref().unwrap_or("?")
-                );
+                ));
                 continue;
             }
             (None, _) => {}
@@ -1708,14 +1716,16 @@ async fn best_scored_match(
         };
         match info.as_ref().and_then(|i| i.album.as_deref()) {
             Some(album) => {
-                eprintln!(
-                    "[Match]   album check (score {:.3}) \"{}\": found album {:?}",
+                logger::info(format!(
+                    "[Match]   Album check (score {:.3}) \"{}\": found album {:?}",
                     score,
                     candidate.title.as_deref().unwrap_or("?"),
                     album
-                );
+                ));
                 if albums_match(album, expected_album) {
-                    eprintln!("[Match]   -> album matches, selecting this candidate");
+                    logger::info(format!(
+                        "[Match]   -> album matches, selecting this candidate"
+                    ));
                     return Some(ScoredMatch {
                         result: candidate.clone(),
                         album_confirmed: true,
@@ -1723,18 +1733,18 @@ async fn best_scored_match(
                 }
             }
             None => {
-                eprintln!(
-                    "[Match]   album check (score {:.3}) \"{}\": no album info (lookup failed or field empty)",
+                logger::info(format!(
+                    "[Match]   Album check (score {:.3}) \"{}\": no album info (lookup failed or field empty)",
                     score,
                     candidate.title.as_deref().unwrap_or("?")
-                );
+                ));
             }
         }
     }
 
-    eprintln!(
-        "[Match]   no album match among top candidates, falling back to best duration-checked score"
-    );
+    logger::info(format!(
+        "[Match]   No album match among top candidates, falling back to best duration-checked score"
+    ));
 
     if let Some(m) = best_within_duration {
         return Some(ScoredMatch {
@@ -1743,13 +1753,15 @@ async fn best_scored_match(
         });
     }
     if let Some((diff, _)) = closest_by_duration {
-        eprintln!(
-            "[Match]   closest real duration still {diff}s off (hard limit {DURATION_TOLERANCE_SECS}s) — rejecting all top-N candidates"
-        );
+        logger::info(format!(
+            "[Match]   Closest real duration still {diff}s off (hard limit {DURATION_TOLERANCE_SECS}s) — rejecting all top-N candidates"
+        ));
         return None;
     }
     if any_lookup_succeeded {
-        eprintln!("[Match]   every verified top-N candidate failed real-data checks — rejecting");
+        logger::info(format!(
+            "[Match]   Every verified top-N candidate failed real-data checks — rejecting"
+        ));
         return None;
     }
     // No real data for any top-N candidate at all, so there's nothing to have
@@ -1947,11 +1959,11 @@ pub async fn find_validated_audio_match(
 
     if let Some(m) = &music_match {
         if m.album_confirmed {
-            eprintln!(
-                "[Match] FINAL PICK (YouTube Music tier, album confirmed): \"{}\" — {}",
+            logger::info(format!(
+                "[Match] [FINAL PICK] (YouTube Music tier, album confirmed): \"{}\" — {}",
                 m.result.title.as_deref().unwrap_or("?"),
                 m.result.url
-            );
+            ));
             return Some(m.result.clone());
         }
     }
@@ -1975,11 +1987,13 @@ pub async fn find_validated_audio_match(
     // deliberate, since this specific gap is exactly what let a
     // wrong-audio pick through with every other check passing.
     if music_match.is_none() {
-        eprintln!("[Match] YouTube Music tier produced nothing, trying plain YouTube search");
+        logger::info(format!(
+            "[Match] YouTube Music tier produced nothing, trying plain YouTube search"
+        ));
     } else {
-        eprintln!(
-            "[Match] no confirmed album match — cross-checking plain YouTube search before committing to the Music-tier pick"
-        );
+        logger::info(format!(
+            "[Match] No confirmed album match — cross-checking plain YouTube search before committing to the Music-tier pick"
+        ));
     }
     let plain_match =
         search_youtube_official_first(app, title, artist, expected_duration, expected_album).await;
@@ -1991,11 +2005,11 @@ pub async fn find_validated_audio_match(
     // fire for a track that reached this point.
     if let Some(m) = &plain_match {
         if m.album_confirmed {
-            eprintln!(
-                "[Match] FINAL PICK (plain YouTube tier, album confirmed): \"{}\" — {}",
+            logger::info(format!(
+                "[Match] [FINAL PICK] (plain YouTube tier, album confirmed): \"{}\" — {}",
                 m.result.title.as_deref().unwrap_or("?"),
                 m.result.url
-            );
+            ));
             return Some(m.result.clone());
         }
     }
@@ -2017,8 +2031,8 @@ pub async fn find_validated_audio_match(
     };
 
     match &chosen {
-        Some(m) => eprintln!(
-            "[Match] FINAL PICK ({} tier, no confirmed album): \"{}\" — {}",
+        Some(m) => logger::info(format!(
+            "[Match] [FINAL PICK] ({} tier, no confirmed album): \"{}\" — {}",
             if picked_plain {
                 "plain YouTube"
             } else {
@@ -2026,8 +2040,8 @@ pub async fn find_validated_audio_match(
             },
             m.title.as_deref().unwrap_or("?"),
             m.url
-        ),
-        None => eprintln!("[Match] nothing validated on either tier"),
+        )),
+        None => logger::info(format!("[Match] Nothing validated on either tier")),
     }
     chosen
 }
@@ -2047,7 +2061,11 @@ struct YtDlpFullEntry {
     uploader: Option<String>,
 }
 
-async fn fetch_full_video_info(app: &AppHandle, video_id: &str) -> Option<YtDlpFullEntry> {
+async fn fetch_full_video_info(
+    app: &AppHandle,
+    video_id: &str,
+    label: &str,
+) -> Option<YtDlpFullEntry> {
     let sidecar = app.shell().sidecar("sonic-yt-dlp").ok()?;
     let url = format!("https://www.youtube.com/watch?v={video_id}");
     let mut args = vec![
@@ -2061,15 +2079,31 @@ async fn fetch_full_video_info(app: &AppHandle, video_id: &str) -> Option<YtDlpF
 
     let output = sidecar.args(args).output().await.ok()?;
     if !output.status.success() {
-        eprintln!(
-            "[YouTube] fetch_full_video_info failed for {video_id}: {}",
+        logger::warn(format!(
+            "[YouTube] Fetching full video info failed for \"{label}\" ({video_id}): {}",
             String::from_utf8_lossy(&output.stderr)
-        );
+        ));
         return None;
     }
-    String::from_utf8_lossy(&output.stdout)
+
+    let entry = String::from_utf8_lossy(&output.stdout)
         .lines()
-        .find_map(|line| serde_json::from_str::<YtDlpFullEntry>(line).ok())
+        .find_map(|line| serde_json::from_str::<YtDlpFullEntry>(line).ok());
+
+    if let Some(entry) = &entry {
+        match &entry.title {
+            Some(t) if t != label => {
+                logger::info(format!(
+                    "[YouTube] Found track \"{label}\" ({video_id}) as \"{t}\""
+                ));
+            }
+            _ => {
+                logger::info(format!("[YouTube] Found track \"{label}\" ({video_id})"));
+            }
+        }
+    }
+
+    entry
 }
 
 pub struct MusicMetadata {
@@ -2079,8 +2113,12 @@ pub struct MusicMetadata {
     pub album_artist: Option<String>,
 }
 
-pub async fn fetch_music_metadata(app: &AppHandle, video_id: &str) -> Option<MusicMetadata> {
-    let entry = fetch_full_video_info(app, video_id).await?;
+pub async fn fetch_music_metadata(
+    app: &AppHandle,
+    video_id: &str,
+    title: &str,
+) -> Option<MusicMetadata> {
+    let entry = fetch_full_video_info(app, video_id, title).await?;
     Some(MusicMetadata {
         cover_url: pick_best_thumbnail(&entry.thumbnails, &entry.thumbnail),
         year: year_from_full_entry(&entry),
@@ -2118,11 +2156,12 @@ async fn enrich_tracks_with_youtube_metadata(app: &AppHandle, tracks: &mut [Trac
     let mut handles = Vec::with_capacity(tracks.len());
     for (i, track) in tracks.iter().enumerate() {
         let video_id = track.id.clone();
+        let title = track.title.clone();
         let sem = semaphore.clone();
         let app = app.clone();
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.ok();
-            let info = fetch_full_video_info(&app, &video_id).await;
+            let info = fetch_full_video_info(&app, &video_id, &title).await;
             (i, info)
         }));
     }

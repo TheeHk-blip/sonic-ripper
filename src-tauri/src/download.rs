@@ -9,11 +9,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cancel::DownloadRegistry;
 use crate::error::{AppError, AppResult};
+use crate::logger;
 use crate::models::Track;
 use crate::settings;
 use crate::youtube;
-
-const BATCH_CONCURRENCY: usize = 6;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,6 +162,29 @@ fn is_bot_detected(stderr: &str) -> bool {
     s.contains("sign in") || s.contains("not bot")
 }
 
+fn deno_sidecar_path() -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let name = if cfg!(windows) {
+        "sonic-deno.exe"
+    } else {
+        "sonic-deno"
+    };
+    let path = exe_dir.join(name);
+    path.exists().then_some(path)
+}
+
+fn append_js_runtime_arg(args: &mut Vec<String>) {
+    if let Some(deno_path) = deno_sidecar_path() {
+        args.push("--js-runtimes".into());
+        args.push(format!("deno:{}", deno_path.to_string_lossy()));
+    } else {
+        logger::warn(
+            "sonic-deno sidecar not found — yt-dlp will fall back to any system JS runtime, if present"
+                .to_string(),
+        );
+    }
+}
+
 async fn run_yt_dlp_streaming(
     app: &AppHandle,
     track_id: &str,
@@ -234,11 +256,17 @@ async fn run_yt_dlp_streaming(
                 }
             }
             CommandEvent::Stderr(bytes) => {
-                stderr.push_str(&String::from_utf8_lossy(&bytes));
+                let line = String::from_utf8_lossy(&bytes);
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    logger::proc("yt-dlp:err", trimmed);
+                }
+                stderr.push_str(&line);
                 stderr.push('\n');
             }
             CommandEvent::Error(e) => {
                 registry.clear_child(track_id);
+                logger::error(format!("yt-dlp process error: {e}"));
                 return Err(AppError::YtDlpFailed(format!("yt-dlp process error: {e}")));
             }
             CommandEvent::Terminated(payload) => {
@@ -302,6 +330,7 @@ async fn download_audio(
         out_template.to_string_lossy().into_owned(),
     ];
 
+    append_js_runtime_arg(&mut args);
     cookies.append_to(&mut args);
 
     args.push(video_url.to_string());
@@ -311,7 +340,9 @@ async fn download_audio(
         run_yt_dlp_streaming(app, track_id, cmd, &["audio"], registry, token).await?;
 
     if exit_code != Some(0) {
-        eprintln!("[yt-dlp stderr]\n{stderr}");
+        logger::error(format!(
+            "yt-dlp exited with {exit_code:?} for track {track_id}"
+        ));
         if is_forbidden(&stderr) {
             return Err(AppError::Forbidden);
         }
@@ -376,6 +407,7 @@ async fn download_video(
         out_template.to_string_lossy().into_owned(),
     ];
 
+    append_js_runtime_arg(&mut args);
     cookies.append_to(&mut args);
 
     args.push(video_url.to_string());
@@ -713,13 +745,19 @@ async fn run_ffmpeg(
         };
         match event {
             CommandEvent::Stderr(bytes) => {
-                stderr.push_str(&String::from_utf8_lossy(&bytes));
+                let line = String::from_utf8_lossy(&bytes);
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    logger::proc("ffmpeg", trimmed);
+                }
+                stderr.push_str(&line);
             }
             CommandEvent::Terminated(payload) => {
                 exit_code = payload.code;
             }
             CommandEvent::Error(e) => {
                 registry.clear_child(track_id);
+                logger::error(format!("ffmpeg process error: {e}"));
                 return Err(AppError::FfmpegFailed(format!("ffmpeg process error: {e}")));
             }
             _ => {}
@@ -728,6 +766,9 @@ async fn run_ffmpeg(
 
     registry.clear_child(track_id);
     if exit_code != Some(0) {
+        logger::error(format!(
+            "ffmpeg exited with {exit_code:?} for track {track_id}"
+        ));
         return Err(AppError::FfmpegFailed(stderr));
     }
     Ok(())
@@ -830,7 +871,9 @@ async fn run_audio_pipeline(
 
     let mut track = track.clone();
     if track.album.is_empty() {
-        if let Some(meta) = youtube::fetch_music_metadata(app, &music_match.video_id).await {
+        if let Some(meta) =
+            youtube::fetch_music_metadata(app, &music_match.video_id, &track.title).await
+        {
             if track.cover_url.is_empty() {
                 if let Some(cover) = meta.cover_url {
                     track.cover_url = cover;
@@ -967,6 +1010,10 @@ pub async fn download_track(
     track: Track,
     opts: DownloadTrackArgs,
 ) -> AppResult<String> {
+    logger::info(format!(
+        "Download track: {} - {}",
+        track.artist, track.title
+    ));
     let base_folder = settings::require_download_folder(&app).await?;
     let dest_folder = match opts
         .album_folder
@@ -1014,6 +1061,11 @@ pub async fn download_track(
     let token = registry.begin_track(&track.id);
     let result = run_pipeline(&app, &track, &dest_folder, &options, &registry, &token).await;
     registry.end_track(&track.id);
+
+    match &result {
+        Ok(path) => logger::info(format!("Done: {}", path.to_string_lossy())),
+        Err(e) => logger::error(format!("Failed: {} - {e}", track.title)),
+    }
 
     let path = result?;
     Ok(path.to_string_lossy().to_string())
@@ -1076,6 +1128,8 @@ pub struct DownloadBatchArgs {
     pub folder_naming_pattern: String,
     #[serde(default)]
     pub is_album: bool,
+    #[serde(default)]
+    pub concurrency: Option<usize>,
 }
 
 fn default_folder_naming_pattern() -> String {
@@ -1091,6 +1145,11 @@ pub async fn download_batch(
     if tracks.is_empty() {
         return Err(AppError::Other("No tracks to download.".to_string()));
     }
+    logger::info(format!(
+        "Download batch: {} track(s) — {}",
+        tracks.len(),
+        args.playlist_name
+    ));
     let registry = app.state::<DownloadRegistry>();
     let base_folder = settings::require_download_folder(&app).await?;
 
@@ -1186,16 +1245,18 @@ pub async fn download_batch(
         batch_work_dir.as_ref().unwrap().path().to_path_buf()
     };
 
-    let semaphore = Arc::new(Semaphore::new(BATCH_CONCURRENCY));
+    let concurrency = settings::resolve_batch_concurrency(&app, args.concurrency).await;
+    logger::info(format!("Batch concurrency: {concurrency}"));
+    let semaphore = Arc::new(Semaphore::new(concurrency));
 
     let mut handles = Vec::with_capacity(tracks.len());
     for track in tracks {
         if track.preview_url.is_none() {
             if args.skip_missing_tracks {
-                eprintln!(
-                    "[Batch] skipping \"{}\" by \"{}\" — not found on YouTube",
+                logger::warn(format!(
+                    "Skipping \"{}\" by \"{}\" — not found on YouTube",
                     track.title, track.artist
-                );
+                ));
                 continue;
             }
             return Err(AppError::TrackNotFound {
@@ -1222,6 +1283,13 @@ pub async fn download_batch(
                 run_pipeline(&app_handle, &track, &dest, &opts, &registry, &token).await
             };
             registry.end_track(&track.id);
+            match &result {
+                Ok(_) => logger::info(format!("✓ {} - {}", track.artist, track.title)),
+                Err(e) if !matches!(e, AppError::Cancelled) => {
+                    logger::warn(format!("✗ {} - {}: {e}", track.artist, track.title))
+                }
+                _ => {}
+            }
             (track, result)
         }));
     }
@@ -1260,8 +1328,12 @@ pub async fn download_batch(
         )));
     }
     if !failures.is_empty() {
-        eprintln!("[Batch] {} track(s) skipped due to errors", failures.len());
+        logger::warn(format!("{} track(s) skipped due to errors", failures.len()));
     }
+    logger::info(format!(
+        "Download batch done: {} succeeded",
+        output_entries.len()
+    ));
 
     if save_in_folder {
         return Ok(batch_dir_path.to_string_lossy().to_string());
