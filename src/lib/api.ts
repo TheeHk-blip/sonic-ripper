@@ -90,6 +90,8 @@ export interface DownloadBatchOptions extends DownloadOptions {
   saveInFolder?: boolean;
   skipMissingTracks?: boolean;
   isAlbum: boolean;
+  /** Parallel download count, 1–16. Omit to use the backend default. */
+  concurrency?: number;
 }
 
 export async function downloadBatch(tracks: Track[], opts: DownloadBatchOptions): Promise<string> {

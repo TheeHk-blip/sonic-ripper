@@ -6,6 +6,7 @@ use tokio::sync::Semaphore;
 
 use crate::error::AppResult;
 use crate::http;
+use crate::logger;
 use crate::models::{ScrapedResult, ScrapedTrackItem};
 
 static URI_RE: Lazy<Regex> =
@@ -377,15 +378,15 @@ async fn resolve_track_as_single(track_id: &str) -> Option<ScrapedTrackItem> {
                 }
             }
             Ok(res) => {
-                eprintln!(
+                logger::warn(format!(
                     "[Spotify Scraper] single track embed fetch ({track_id}) HTTP {}",
                     res.status()
-                );
+                ));
             }
             Err(e) => {
-                eprintln!(
+                logger::warn(format!(
                     "[Spotify Scraper] single track embed fetch ({track_id}) request error: {e}"
-                );
+                ));
             }
         }
     }
@@ -430,7 +431,9 @@ pub async fn resolve_album_year(
     let open_album_url = format!("https://open.spotify.com/album/{entity_id}");
     let (year, _cover) = fetch_album_page_fallback(&open_album_url).await;
     if let Some(y) = year {
-        println!("[Spotify Scraper] Album year recovered via page fallback: {y}");
+        logger::info(format!(
+            "[Spotify Scraper] Album year recovered via page fallback: {y}"
+        ));
         return Some(y);
     }
 
@@ -462,9 +465,9 @@ pub async fn resolve_album_year(
                                                 .pointer("/props/pageProps/state/data/entity");
                                             if let Some(te) = track_entity {
                                                 if let Some(y) = extract_release_year(te) {
-                                                    println!(
+                                                    logger::info(format!(
                                                         "[Spotify Scraper] Album year inherited from first track embed: {y}"
-                                                    );
+                                                    ));
                                                     return Some(y);
                                                 }
                                             }
@@ -512,10 +515,10 @@ async fn fetch_playlist_track_ids_spclient(playlist_id: &str, token: &str) -> Op
         .await
         .ok()?;
     if !res.status().is_success() {
-        eprintln!(
+        logger::warn(format!(
             "[Spotify Scraper] spclient playlist fetch HTTP {}",
             res.status()
-        );
+        ));
         return None;
     }
     let data: Value = res.json().await.ok()?;
@@ -562,16 +565,23 @@ fn load_pathfinder_config() -> PathfinderConfig {
 
 fn save_pathfinder_config(cfg: &PathfinderConfig) {
     let Some(path) = pathfinder_config_path() else {
-        eprintln!("[Spotify Scraper] couldn't resolve config dir — settings won't persist");
+        logger::warn(format!(
+            "[Spotify Scraper] couldn't resolve config dir — settings won't persist"
+        ));
         return;
     };
     match serde_json::to_string_pretty(cfg) {
         Ok(json) => {
             if let Err(e) = std::fs::write(&path, json) {
-                eprintln!("[Spotify Scraper] failed writing {}: {e}", path.display());
+                logger::warn(format!(
+                    "[Spotify Scraper] failed writing {}: {e}",
+                    path.display()
+                ));
             }
         }
-        Err(e) => eprintln!("[Spotify Scraper] failed serializing pathfinder config: {e}"),
+        Err(e) => logger::warn(format!(
+            "[Spotify Scraper] failed serializing pathfinder config: {e}"
+        )),
     }
 }
 
@@ -661,16 +671,18 @@ async fn fetch_pathfinder_playlist_page(
         .ok()?;
 
     if !res.status().is_success() {
-        eprintln!(
+        logger::warn(format!(
             "[Spotify Scraper] pathfinder fetchPlaylist HTTP {} (offset {offset})",
             res.status()
-        );
+        ));
         return None;
     }
     match res.json::<Value>().await {
         Ok(v) => Some(v),
         Err(e) => {
-            eprintln!("[Spotify Scraper] pathfinder fetchPlaylist: bad JSON: {e}");
+            logger::warn(format!(
+                "[Spotify Scraper] pathfinder fetchPlaylist: bad JSON: {e}"
+            ));
             None
         }
     }
@@ -758,11 +770,11 @@ async fn resolve_playlist_via_pathfinder(
         tracks.extend(parsed.tracks);
         offset += PATHFINDER_PAGE_SIZE;
 
-        println!(
+        logger::info(format!(
             "[Spotify Scraper] pathfinder page {page_num}: +{got} tracks ({}/{})",
             tracks.len(),
             parsed.total_count
-        );
+        ));
 
         if offset >= parsed.total_count || got == 0 {
             break;
@@ -813,16 +825,18 @@ async fn fetch_pathfinder_album_page(
         .ok()?;
 
     if !res.status().is_success() {
-        eprintln!(
+        logger::warn(format!(
             "[Spotify Scraper] pathfinder getAlbum HTTP {} (offset {offset})",
             res.status()
-        );
+        ));
         return None;
     }
     match res.json::<Value>().await {
         Ok(v) => Some(v),
         Err(e) => {
-            eprintln!("[Spotify Scraper] pathfinder getAlbum: bad JSON: {e}");
+            logger::warn(format!(
+                "[Spotify Scraper] pathfinder getAlbum: bad JSON: {e}"
+            ));
             None
         }
     }
@@ -848,7 +862,9 @@ fn parse_pathfinder_album_page(page: &Value) -> Option<PathfinderAlbumPage> {
     let mut container = None;
     for path in CANDIDATE_ROOTS {
         if let Some(c) = page.pointer(path) {
-            println!("[Spotify Scraper] pathfinder getAlbum: matched root {path}");
+            logger::info(format!(
+                "[Spotify Scraper] pathfinder getAlbum: matched root {path}"
+            ));
             container = Some(c);
             break;
         }
@@ -856,18 +872,18 @@ fn parse_pathfinder_album_page(page: &Value) -> Option<PathfinderAlbumPage> {
     let Some(container) = container else {
         if let Some(data) = page.get("data") {
             if let Some(obj) = data.as_object() {
-                println!(
+                logger::info(format!(
                     "[Spotify Scraper] pathfinder getAlbum: none of {:?} matched; \
                      top-level keys under /data were: {:?}",
                     CANDIDATE_ROOTS,
                     obj.keys().collect::<Vec<_>>()
-                );
+                ));
             }
         } else {
-            println!(
+            logger::info(format!(
                 "[Spotify Scraper] pathfinder getAlbum: response had no /data at all — \
                  raw response: {page}"
-            );
+            ));
         }
         return None;
     };
@@ -885,11 +901,11 @@ fn parse_pathfinder_album_page(page: &Value) -> Option<PathfinderAlbumPage> {
         .get("tracksV2")
         .or_else(|| container.get("tracks"));
     let Some(tracks_container) = tracks_container else {
-        println!(
+        logger::info(format!(
             "[Spotify Scraper] pathfinder getAlbum: matched album root but no tracks/tracksV2 \
              key — album-level keys were: {:?}",
             container.as_object().map(|o| o.keys().collect::<Vec<_>>())
-        );
+        ));
         return None;
     };
 
@@ -979,11 +995,11 @@ async fn resolve_album_via_pathfinder(
         tracks.extend(parsed.tracks);
         offset += PATHFINDER_PAGE_SIZE;
 
-        println!(
+        logger::info(format!(
             "[Spotify Scraper] pathfinder getAlbum page {page_num}: +{got} tracks ({}/{})",
             tracks.len(),
             parsed.total_count
-        );
+        ));
 
         if offset >= parsed.total_count || got == 0 {
             break;
@@ -1004,7 +1020,25 @@ pub async fn scrape_spotify(input: &str) -> AppResult<Option<ScrapedResult>> {
     let query = input.trim();
 
     if looks_like_spotify_link(query) {
-        scrape_spotify_url(query).await
+        logger::info(format!("[Scrape Spotify]: {query}"));
+        let result = scrape_spotify_url(query).await;
+        match &result {
+            Ok(Some(ScrapedResult::Track(track))) => {
+                logger::info(format!(
+                    "[Resolved]: found track \"{}\" by {}",
+                    track.title, track.artist
+                ));
+            }
+            Ok(Some(ScrapedResult::Playlist { tracks, .. })) => {
+                logger::info(format!("[Resolved]: {} track(s)", tracks.len()));
+                for t in tracks {
+                    logger::info(format!("  Found track \"{}\" by {}", t.title, t.artist));
+                }
+            }
+            Ok(None) => logger::warn(format!("No result for {query}")),
+            Err(e) => logger::error(format!("Scrape failed: {e}")),
+        }
+        result
     } else {
         Ok(None)
     }
@@ -1028,7 +1062,7 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
         (String::new(), String::new())
     };
 
-    println!("[Spotify Scraper] Processing entityType=\"{entity_type}\", entityId=\"{entity_id}\" from \"{url}\"");
+    logger::info(format!("[Spotify Scraper] Processing entityType=\"{entity_type}\", entityId=\"{entity_id}\" from \"{url}\""));
 
     if entity_type.is_empty() || entity_id.is_empty() {
         return Ok(None);
@@ -1083,47 +1117,47 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
                             Some((_album_name, tracks)) => {
                                 match pick_matching_track(tracks, &title) {
                                     Some(track) => {
-                                        println!(
+                                        logger::info(format!(
                                             "[Spotify Scraper] resolved track via pathfinder \
                                              getAlbum (parent album {album_id})"
-                                        );
+                                        ));
                                         return Ok(Some(ScrapedResult::Track(track)));
                                     }
                                     None => {
-                                        println!(
+                                        logger::info(format!(
                                             "[Spotify Scraper] pathfinder getAlbum resolved parent \
                                              album {album_id} but no track matched \"{title}\" \
                                              unambiguously — falling back to embed path"
-                                        );
+                                        ));
                                     }
                                 }
                             }
                             None => {
-                                println!(
+                                logger::info(format!(
                                     "[Spotify Scraper] pathfinder getAlbum unavailable/failed for \
                                      parent album {album_id} — falling back to embed path"
-                                );
+                                ));
                             }
                         }
                     }
                     (None, _) => {
-                        println!(
+                        logger::info(format!(
                             "[Spotify Scraper] pathfinder skipped: no anon access token extracted \
                              from embed page __NEXT_DATA__ — falling back to embed path"
-                        );
+                        ));
                     }
                     (_, None) => {
-                        println!(
+                        logger::info(format!(
                             "[Spotify Scraper] pathfinder skipped: no client token set — \
                              falling back to embed path"
-                        );
+                        ));
                     }
                 }
             } else {
-                println!(
+                logger::info(format!(
                     "[Spotify Scraper] pathfinder skipped: no album id found on track entity \
                      (tried /album/uri, /album/id) — falling back to embed path"
-                );
+                ));
             }
         }
 
@@ -1211,10 +1245,10 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
             (Some(token), Some(client_token)) => {
                 match resolve_playlist_via_pathfinder(&entity_id, token, &client_token).await {
                     Some(tracks) => {
-                        println!(
+                        logger::info(format!(
                             "[Spotify Scraper] resolved {} tracks via pathfinder fetchPlaylist",
                             tracks.len()
-                        );
+                        ));
                         return Ok(Some(ScrapedResult::Playlist {
                             playlist_name,
                             is_album: false,
@@ -1222,24 +1256,24 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
                         }));
                     }
                     None => {
-                        println!(
+                        logger::info(format!(
                             "[Spotify Scraper] pathfinder fetchPlaylist unavailable/failed — \
                              falling back to embed+spclient path"
-                        );
+                        ));
                     }
                 }
             }
             (None, _) => {
-                println!(
+                logger::info(format!(
                     "[Spotify Scraper] pathfinder skipped: no anon access token extracted \
                      from embed page __NEXT_DATA__ — falling back to embed+spclient path"
-                );
+                ));
             }
             (_, None) => {
-                println!(
+                logger::info(format!(
                     "[Spotify Scraper] pathfinder skipped: no client token set (paste one in \
                      from devtools) — falling back to embed+spclient path"
-                );
+                ));
             }
         }
     }
@@ -1255,10 +1289,10 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
             (Some(token), Some(client_token)) => {
                 match resolve_album_via_pathfinder(&entity_id, token, &client_token).await {
                     Some((album_name, tracks)) => {
-                        println!(
+                        logger::info(format!(
                             "[Spotify Scraper] resolved {} tracks via pathfinder getAlbum",
                             tracks.len()
-                        );
+                        ));
                         return Ok(Some(ScrapedResult::Playlist {
                             playlist_name: album_name,
                             is_album: true,
@@ -1266,24 +1300,24 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
                         }));
                     }
                     None => {
-                        println!(
+                        logger::info(format!(
                             "[Spotify Scraper] pathfinder getAlbum unavailable/failed — \
                              falling back to embed+page-fallback path"
-                        );
+                        ));
                     }
                 }
             }
             (None, _) => {
-                println!(
+                logger::info(format!(
                     "[Spotify Scraper] pathfinder skipped: no anon access token extracted \
                      from embed page __NEXT_DATA__ — falling back to embed+page-fallback path"
-                );
+                ));
             }
             (_, None) => {
-                println!(
+                logger::info(format!(
                     "[Spotify Scraper] pathfinder skipped: no client token set — \
                      falling back to embed+page-fallback path"
-                );
+                ));
             }
         }
     }
@@ -1370,10 +1404,10 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown Track"),
             );
-            println!(
+            logger::info(format!(
                 "[Spotify Scraper] Playlist entry \"{t_title}\": could not extract a track id \
                  (no usable uri/id) — will fall back to playlist-level data for this entry"
-            );
+            ));
         }
         track_ids.push(track_id);
     }
@@ -1381,11 +1415,11 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
     if let Some(token) = anon_access_token.as_deref() {
         if let Some(all_ids) = fetch_playlist_track_ids_spclient(&entity_id, token).await {
             if all_ids.len() > track_ids.len() {
-                println!(
+                logger::info(format!(
                     "[Spotify Scraper] Embed had {} tracks; spclient reports {} — resolving all of them",
                     track_ids.len(),
                     all_ids.len()
-                );
+                ));
                 track_ids = all_ids.into_iter().map(Some).collect();
             }
         }
@@ -1447,10 +1481,10 @@ async fn scrape_spotify_url(input_url: &str) -> AppResult<Option<ScrapedResult>>
             .or_else(|| playlist_level_year.clone());
 
         if single.is_none() {
-            println!(
+            logger::info(format!(
                 "[Spotify Scraper] Track {i} ({title}): per-track resolution failed — \
                  using playlist-level fallback for cover/year, album left blank"
-            );
+            ));
         }
 
         tracks.push(ScrapedTrackItem {

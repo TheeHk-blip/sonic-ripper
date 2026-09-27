@@ -1,6 +1,6 @@
 [package]
 name = "sonicripper"
-version = "1.0.1"
+version = "1.0.2"
 description = "A Music downloader App"
 authors = ["TheeHk-blip"]
 edition = "2021"
@@ -39,3 +39,7 @@ tauri-plugin-localhost = "2"
 tiny_http = "0.12"
 directories = "6.0.0"
 tokio-util = "0.7.19"
+tauri-plugin-process = "2.3.1"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"

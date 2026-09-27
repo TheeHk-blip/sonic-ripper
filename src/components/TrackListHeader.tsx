@@ -7,8 +7,8 @@ interface TrackListHeaderProps {
 
 export default function TrackListHeader({ trackCount, playlistName }: TrackListHeaderProps) {
   return (
-    <div className="flex flex-col my-5">
-      <div className="flex flex-row gap-2.5 mb-4 items-center">
+    <div className="flex flex-col px-5">
+      <div className="flex flex-row gap-2.5 mb-2 items-center">
         <ListMusic className="size-5 text-gold" />
         <div className="flex flex-col">
           <h3 className="text-lg">

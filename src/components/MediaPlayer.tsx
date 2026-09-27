@@ -89,9 +89,9 @@ export default function MediaPlayer({ track, onClose }: MediaPlayerProps) {
       animate={{ y: 0, opacity: 1 }}
       exit={{ y: 100, opacity: 0 }}
       transition={{ type: 'spring', damping: 25, stiffness: 120 }}
-      className={`${isVideoExpanded ? '' : 'mt-60'} fixed bottom-0 left-0 right-0 z-10  bg-brown/95 backdrop-blur-md shadow-2xl p-4 sm:p-6`}
+      className={`${isVideoExpanded ? '' : 'mt-60'} fixed bottom-0 left-0 right-0 z-10  bg-brown/95 backdrop-blur-md shadow-2xl p-4 md:p-8`}
     >
-      <div className="max-w-7xl mx-auto flex flex-col gap-4">
+      <div className="max-w-6xl mx-auto flex flex-col gap-4">
         {/* Video frame (YouTube only) */}
         {isYouTube && workerEmbedSrc && import.meta.env.VITE_EMBED_WORKER_URL && (
           <motion.div

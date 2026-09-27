@@ -79,11 +79,12 @@ jobs:
             --dir src-tauri/binaries \
             --pattern "sonic-ffmpeg-*" \
             --pattern "sonic-yt-dlp-*" \
+            --pattern "sonic-deno-*" \
             --clobber
 
       - name: Ensure sidecar binaries are executable
         if: matrix.platform != 'windows-latest'
-        run: chmod +x src-tauri/binaries/sonic-yt-dlp-* src-tauri/binaries/sonic-ffmpeg-*
+        run: chmod +x src-tauri/binaries/sonic-yt-dlp-* src-tauri/binaries/sonic-ffmpeg-* src-tauri/binaries/sonic-deno-*
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -94,6 +95,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VITE_EMBED_WORKER_URL: ${{ secrets.VITE_EMBED_WORKER_URL }}
           EXCLUDE_LIBS: 'libwayland-client.so.0'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Sonic Ripper v__VERSION__'

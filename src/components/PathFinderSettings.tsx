@@ -60,7 +60,7 @@ export function SpotifyPathfinderSettings() {
   if (!loaded) return <p>Loading current settings…</p>;
 
   return (
-    <div className="flex flex-col w-full my-3 gap-2.5">
+    <div className="flex flex-col w-full my-3 py-5 gap-2.5">
       <div className="my-5">
         <h1>NOTE</h1>
         <p>

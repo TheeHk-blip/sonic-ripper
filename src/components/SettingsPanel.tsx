@@ -8,10 +8,16 @@ interface SettingsPanelProps {
   onChange: (settings: DownloadSettings) => void;
 }
 
+const MIN_CONCURRENCY = 1;
+const MAX_CONCURRENCY = 16;
+const DEFAULT_CONCURRENCY = 6;
+
 export default function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
   const [downloadFolder, setDownloadFolder] = useState<string | null>(null);
   const [folderLoading, setFolderLoading] = useState(true);
   const [folderPicking, setFolderPicking] = useState(false);
+  const [isEditingCookies, setIsEditingCookies] = useState(false);
+  const hasPastedCookies = !!settings.youtubeCookies?.trim();
 
   useEffect(() => {
     getSettings()
@@ -93,10 +99,10 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
   const isVideoFormat = settings.format === 'mp4';
 
   return (
-    <div className="p-6 shadow-xl relative">
-      <div className="flex items-center gap-3 mb-6 border-b border-olive pb-4">
+    <div className="px-5 py-3 shadow-xl relative">
+      <div className="flex items-center gap-3 mb-6">
         <Settings className="size-5 text-cream" />
-        <h2 className="uppercase font-display">02 / Export Configuration</h2>
+        <h2 className="uppercase font-display">Export Configuration</h2>
       </div>
 
       <div className="flex flex-col gap-6">
@@ -467,6 +473,39 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
               />
             </button>
           </div>
+
+          {/* Batch Download Concurrency */}
+          <div className="flex flex-col gap-2" id="concurrency-wrapper">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-1 min-w-0">
+                <span className="text-xs font-black uppercase tracking-wider text-cream">
+                  Parallel Downloads
+                </span>
+                <span className="text-[10px] md:text-sm text-rust leading-relaxed">
+                  Each track spawns its own download and conversion process, so this mostly trades
+                  CPU load and connection count for speed — not just bandwidth. Lower it if your
+                  machine struggles or downloads stall.
+                </span>
+              </div>
+              <span className="shrink-0 text-sm font-mono text-gold tabular-nums">
+                {settings.concurrency ?? DEFAULT_CONCURRENCY}
+              </span>
+            </div>
+            <input
+              type="range"
+              id="input-concurrency"
+              min={MIN_CONCURRENCY}
+              max={MAX_CONCURRENCY}
+              step={1}
+              value={settings.concurrency ?? DEFAULT_CONCURRENCY}
+              onChange={e => onChange({ ...settings, concurrency: Number(e.target.value) })}
+              className="w-full accent-olive cursor-pointer"
+            />
+            <div className="flex justify-between text-[9px] text-cream/40 uppercase tracking-wider">
+              <span>{MIN_CONCURRENCY} · Gentle</span>
+              <span>{MAX_CONCURRENCY} · Max</span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -508,18 +547,60 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
               <span className="block text-xs uppercase tracking-[0.2em] mb-2 font-semibold">
                 Or Paste Netscape Cookies
               </span>
-              <p className="text-xs mb-3 leading-relaxed">
-                Manually paste your Netscape cookies file text if browser extraction is not
-                available on your current device setup.
-              </p>
-              <textarea
-                id="cookies-text-input"
-                value={settings.youtubeCookies || ''}
-                onChange={e => onChange({ ...settings, youtubeCookies: e.target.value })}
-                placeholder={`# Netscape HTTP Cookie File .youtube.com	TRUE	/	TRUE	1791234567	__Secure-3PSID	AIzaSy...`}
-                rows={5}
-                className="w-full p-3 bg-charcoal border-2 border-rust/30 rounded-md text-[10px] placeholder-cream/30 focus:outline-none focus:border-olive/40 transition-all"
-              />
+              {hasPastedCookies && !isEditingCookies ? (
+                <div className="p-4 rounded-none flex flex-col gap-2">
+                  <span className="block text-xs uppercase tracking-wide text-gold font-bold">
+                    Cookies Saved
+                  </span>
+                  <p className="text-xs text-cream/50 leading-relaxed">
+                    A pasted Netscape cookies file is stored and will be used for authenticated
+                    requests.
+                  </p>
+                  <div className="flex gap-2 mt-1">
+                    <button
+                      type="button"
+                      id="btn-replace-cookies"
+                      onClick={() => setIsEditingCookies(true)}
+                      className="px-3 py-1.5 bg-gold/40 rounded-sm text-[10px] font-black uppercase tracking-wider cursor-pointer"
+                    >
+                      Replace
+                    </button>
+                    <button
+                      type="button"
+                      id="btn-clear-cookies"
+                      onClick={() => onChange({ ...settings, youtubeCookies: '' })}
+                      className="px-3 py-1.5 bg-rust/40 rounded-sm text-[10px] font-black uppercase tracking-wider cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <p className="text-xs mb-3 leading-relaxed">
+                    Manually paste your Netscape cookies file text if browser extraction is not
+                    available on your current device setup.
+                  </p>
+                  <textarea
+                    id="cookies-text-input"
+                    value={settings.youtubeCookies || ''}
+                    onChange={e => onChange({ ...settings, youtubeCookies: e.target.value })}
+                    placeholder={`# Netscape HTTP Cookie File .youtube.com	TRUE	/	TRUE	1791234567	__Secure-3PSID	AIzaSy...`}
+                    rows={5}
+                    className="w-full p-3 bg-charcoal border-2 border-rust/30 rounded-md text-[10px] placeholder-cream/30 focus:outline-none focus:border-olive/40 transition-all"
+                  />
+                  {hasPastedCookies && (
+                    <button
+                      type="button"
+                      id="btn-done-editing-cookies"
+                      onClick={() => setIsEditingCookies(false)}
+                      className="mt-2 text-[10px] uppercase tracking-wider underline text-cream/60 cursor-pointer"
+                    >
+                      Done
+                    </button>
+                  )}
+                </>
+              )}
             </div>
           )}
 
