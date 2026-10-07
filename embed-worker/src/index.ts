@@ -20,40 +20,43 @@ export default {
 		}
 
 		const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="referrer" content="strict-origin-when-cross-origin">
-  <title>Sonic Player</title>
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      background-color: #000;
-      overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    iframe {
-      width: 100%;
-      height: 100%;
-      border: 0;
-    }
-  </style>
-</head>
-<body>
-  <iframe
-    src="https://www.youtube-nocookie.com/embed/${safeVideoId}?autoplay=1&rel=0&playsinline=1"
-    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-    allowfullscreen
-    referrerpolicy="strict-origin-when-cross-origin"
-  ></iframe>
-</body>
-</html>`;
+		<html lang="en">
+		<head>
+	  <meta charset="UTF-8">
+	  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+	  <meta name="referrer" content="strict-origin-when-cross-origin">
+	  <title>Sonic Player</title>
+	  <style>
+	    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+	    #player { width: 100%; height: 100%; border: 0; }
+	  </style>
+			</head>
+			<body>
+	  <div id="player"></div>
+	  <script src="https://www.youtube.com/iframe_api"></script>
+	  <script>
+	    var player;
+	    function send(type, data) {
+	      window.parent.postMessage({ source: 'sonic-embed', type: type, data: data }, '*');
+	    }
+
+	    function onYouTubeIframeAPIReady() {
+	      player = new YT.Player('player', {
+	        host: 'https://www.youtube-nocookie.com',
+	        videoId: '${safeVideoId}',
+	        width: '100%',
+	        height: '100%',
+	        playerVars: { autoplay: 1, rel: 0, playsinline: 1, origin: location.origin },
+	        events: {
+	          onReady: function () { send('ready'); },
+	          onStateChange: function (e) { send('state', e.data); },
+	          onError: function (e) { send('error', e.data); }
+	        }
+	      });
+	    }
+	  </script>
+		</body>
+		</html>`;
 
 		return new Response(html, {
 			headers: {

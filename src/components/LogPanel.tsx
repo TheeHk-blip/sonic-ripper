@@ -49,7 +49,7 @@ function LogPanel() {
   };
 
   return (
-    <div className="flex flex-col rounded-md border border-cream/10 bg-charcoal mx-2 md:h-[90vh] my-auto">
+    <div className="flex flex-col rounded-md border border-cream/10 bg-charcoal mx-2 mt-2 md:h-[90vh] my-auto">
       <div className="flex items-center justify-between border-b border-cream/10 px-3 py-2">
         <button
           type="button"

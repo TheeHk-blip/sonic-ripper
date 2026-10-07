@@ -33,19 +33,6 @@ struct CacheEntry {
 
 static CACHE: Lazy<Mutex<HashMap<String, CacheEntry>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-// Cookie state for every yt-dlp call this module makes (search, direct
-// resolve, and the `fetch_full_video_info` verification lookup).
-//
-// This exists separately from `download.rs`'s per-call `CookieAuth` because
-// matching/verification here runs during `analyze` — before a download's
-// `DownloadOptions` exists at all — so there's no per-call value to thread
-// through. Same pattern as `spotify_client_token`/`set_spotify_client_token`
-// in `spotify.rs`: set once from the frontend (or synced in from
-// `download.rs` — see `download::download_track`/`download_batch`), read
-// internally wherever needed.
-//
-// `--cookies` (an explicit file) wins over `--cookies-from-browser` when
-// both are set, matching `download.rs`'s `CookieAuth::append_to` precedence.
 #[derive(Default)]
 struct YoutubeCookieState {
     cookies_path: Option<String>,
@@ -55,20 +42,34 @@ struct YoutubeCookieState {
 static YOUTUBE_COOKIES: Lazy<Mutex<YoutubeCookieState>> =
     Lazy::new(|| Mutex::new(YoutubeCookieState::default()));
 
+fn write_private_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let _ = std::fs::remove_file(path);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)?.write_all(contents.as_bytes())
+}
+
 pub fn set_youtube_cookies(raw_cookies: Option<String>) {
     let mut state = YOUTUBE_COOKIES.lock().unwrap();
+    let path = std::env::temp_dir().join("sonic-youtube-cookies.txt");
     match raw_cookies.filter(|s| !s.trim().is_empty()) {
-        Some(raw) => {
-            let path = std::env::temp_dir().join("sonic-youtube-cookies.txt");
-            match std::fs::write(&path, &raw) {
-                Ok(()) => state.cookies_path = Some(path.to_string_lossy().into_owned()),
-                Err(e) => {
-                    logger::warn(format!("[YouTube] failed to write cookies file: {e}"));
-                    state.cookies_path = None;
-                }
+        Some(raw) => match write_private_file(&path, &raw) {
+            Ok(()) => state.cookies_path = Some(path.to_string_lossy().into_owned()),
+            Err(e) => {
+                logger::warn(format!("[YouTube] failed to write cookies file: {e}"));
+                state.cookies_path = None;
             }
+        },
+        None => {
+            let _ = std::fs::remove_file(&path);
+            state.cookies_path = None;
         }
-        None => state.cookies_path = None,
     }
 }
 
@@ -122,7 +123,15 @@ fn pick_best_thumbnail(
         .and_then(|thumbs| {
             thumbs
                 .iter()
-                .max_by_key(|t| t.width.unwrap_or(0) as u64 * t.height.unwrap_or(0) as u64)
+                // Largest first; at equal size prefer a non-WebP URL: YouTube
+                // lists the same maxres frame as both .jpg and .webp, and WebP
+                // does not embed in Opus (see download.rs [FIX #17]).
+                .max_by_key(|t| {
+                    (
+                        t.width.unwrap_or(0) as u64 * t.height.unwrap_or(0) as u64,
+                        !t.url.to_ascii_lowercase().contains("webp"),
+                    )
+                })
         })
         .map(|t| t.url.clone())
         .or_else(|| fallback.clone())
@@ -1056,6 +1065,81 @@ fn is_official_channel(uploader: &str) -> bool {
             .any(|marker| u.contains(marker))
 }
 
+const SEQUEL_MARKER_WORDS: &[&str] = &[
+    "part", "pt", "vol", "volume", "disc", "cd", "ii", "iii", "iv", "reprise", "reloaded",
+];
+
+fn has_sequel_marker(candidate_words: &[String], expected_words: &[String]) -> bool {
+    candidate_words.iter().any(|w| {
+        (SEQUEL_MARKER_WORDS.contains(&w.as_str()) || matches!(w.as_str(), "2" | "3" | "4"))
+            && !expected_words.contains(w)
+    })
+}
+
+const PLACEHOLDER_TOPIC_NAMES: &[&str] = &["release", "various artists", "unknown artist"];
+
+fn is_placeholder_topic_channel(uploader: &str) -> bool {
+    is_topic_channel(uploader)
+        && PLACEHOLDER_TOPIC_NAMES.contains(&normalize_for_match(uploader).join(" ").as_str())
+}
+
+// A channel whose name need not contain the artist's name yet routinely
+// hosts the artist's genuine uploads: placeholder Topic channels, label
+// channels, and "<Artist-ish> TV" channels (e.g. "StarBoy TV" for Wizkid).
+// Such a candidate may pass WITHOUT artist evidence, but only as a weak match
+// (see `TitleVerdict::Weak`): it needs an exact title, ranks below any
+// candidate that does credit the artist, and a plain-YouTube pick that credits
+// the artist beats a weak Music-tier pick.
+fn is_neutral_channel(uploader: &str) -> bool {
+    if is_topic_channel(uploader) {
+        return is_placeholder_topic_channel(uploader);
+    }
+    is_official_channel(uploader)
+        || normalize_for_match(uploader)
+            .last()
+            .is_some_and(|w| w.as_str() == "tv")
+}
+
+// True when the words of a channel name cover ALL words of at least one
+// credited artist. Whole-name matching (not "any word") for the same reason
+// as `artist_hit` in `match_score`: a lone shared fragment like "lil" must
+// never stand in for a full artist name.
+fn words_cover_credited_artist(words: &[String], artist: &str) -> bool {
+    split_credited_artists(artist).any(|single_artist| {
+        let artist_words = normalize_for_match(single_artist);
+        !artist_words.is_empty() && artist_words.iter().all(|w| words.contains(w))
+    })
+}
+
+// True when a "<Name> - Topic" channel is the Topic channel of a CREDITED
+// artist. Topic channels are named after the primary artist of the release
+// they host, so a Topic channel for anyone else is that someone else's
+// release — a remix, re-edit or cover that name-drops the original artist
+// in its title. Without this check any Topic channel earned the full bonus
+fn topic_channel_credits_artist(uploader: &str, artist: &str) -> bool {
+    let mut words = normalize_for_match(uploader);
+    if words.last().is_some_and(|w| w.as_str() == "topic") {
+        words.pop();
+    }
+    words_cover_credited_artist(&words, artist)
+}
+
+// True when `uploader` is a channel we'd vouch for on its own: a Topic
+// channel of a credited artist, the artist's Vevo, a major label, or a
+// channel named after a credited artist. A fan/lyric/aggregator channel
+// (even with a matching duration) is not trusted.
+fn is_trusted_uploader(uploader: &str, artist: &str) -> bool {
+    if uploader.trim().is_empty() {
+        return false;
+    }
+    if is_topic_channel(uploader) {
+        return topic_channel_credits_artist(uploader, artist);
+    }
+    is_vevo_channel(uploader, artist)
+        || is_official_channel(uploader)
+        || words_cover_credited_artist(&normalize_for_match(uploader), artist)
+}
+
 // Real-world duration can drift a bit between platforms so both the initial flat-data
 // filter in `match_score` and the authoritative real-duration recheck in
 // `best_scored_match` allow this much slack before a duration mismatch is
@@ -1233,7 +1317,7 @@ fn match_score(
         .iter()
         .chain(candidate_uploader_words.iter())
         .any(|w| ALTERED_VERSION_SIGNAL_WORDS.contains(&w.as_str()) && !expected_words.contains(w));
-    if is_altered_version_signal {
+    if is_altered_version_signal || has_sequel_marker(&candidate_words, &expected_words) {
         return None;
     }
 
@@ -1302,7 +1386,26 @@ fn match_score(
     // against the REAL, resolved uploader in `best_scored_match` before it
     // can become a final pick — this only stops blocking it from reaching
     // that authoritative check in the first place.
-    if !artist_hit && !candidate_uploader.trim().is_empty() {
+    // No artist evidence is tolerated only for a neutral channel (placeholder
+    // Topic, label, "<name> TV") carrying the exact title; it is then a weak
+    // match and is scored down below.
+    let weak_artist = !artist_hit
+        && !candidate_uploader.trim().is_empty()
+        && title_score >= 1.0
+        && is_neutral_channel(&candidate_uploader);
+    if !artist_hit && !candidate_uploader.trim().is_empty() && !weak_artist {
+        return None;
+    }
+    // A Topic channel for a different artist is a different artist's release
+    // even when the title name-drops ours (see `topic_channel_credits_artist`).
+    // Rejected outright rather than just denied the bonus, because the only
+    // reason it reached this point is the artist name inside its title.
+    // Placeholder channels ("Release - Topic") belong to no artist, so they
+    // are exempt.
+    if is_topic_channel(&candidate_uploader)
+        && !is_placeholder_topic_channel(&candidate_uploader)
+        && !topic_channel_credits_artist(&candidate_uploader, artist)
+    {
         return None;
     }
 
@@ -1347,10 +1450,7 @@ fn match_score(
     } else if is_official_channel(&candidate_uploader) {
         0.10
     } else if !candidate_uploader.trim().is_empty()
-        && split_credited_artists(artist).any(|single_artist| {
-            let words = normalize_for_match(single_artist);
-            !words.is_empty() && words.iter().all(|w| candidate_uploader_words.contains(w))
-        })
+        && words_cover_credited_artist(&candidate_uploader_words, artist)
     {
         // Not a Topic/Vevo channel, but the uploader's own name IS (all of)
         // one of the credited artists — e.g. uploader "Takeoff" for a
@@ -1378,7 +1478,14 @@ fn match_score(
     let extra_words = candidate_words.len().saturating_sub(expected_words.len());
     let conciseness_penalty = (extra_words as f64 * 0.01).min(0.05);
 
-    Some(title_score * 0.7 + duration_score * 0.3 + channel_bonus - conciseness_penalty)
+    // No artist evidence (see `weak_artist`): rank below credited candidates.
+    let weak_penalty = if weak_artist { 0.10 } else { 0.0 };
+
+    Some(
+        title_score * 0.7 + duration_score * 0.3 + channel_bonus
+            - conciseness_penalty
+            - weak_penalty,
+    )
 }
 
 // How many of the top-scoring, already-validated candidates get a real,
@@ -1390,36 +1497,30 @@ fn match_score(
 // this tier entirely.
 const ALBUM_CHECK_TOP_N: usize = 4;
 
-// True when two album names refer to the same release closely enough to
-// use as a match signal. Exact (case/whitespace-insensitive) equality is
-// always accepted. A longer variant is only accepted when the *extra*
-// tokens are benign catalog suffixes (Deluxe, Expanded, Remaster, …) —
-// never when they carry altered-version signals ("Tribute", "Cut",
-// "Remix", …). The old plain `contains` check let
-// "Ascension (Don't Ever Wonder) The Tribute" match the expected
-// "Ascension (Don't Ever Wonder)" and pick the wrong upload.
-fn albums_match(a: &str, b: &str) -> bool {
-    let a = a.trim().to_lowercase();
-    let b = b.trim().to_lowercase();
-    if a.is_empty() || b.is_empty() {
-        return false;
-    }
-    if a == b {
-        return true;
-    }
+// How two album names relate (names compared as tokens, so punctuation,
+// case, "&" vs "and" and bracket styles never matter: "Rave & Roses (Ultra)"
+// is "Rave and Roses Ultra").
+//
+// - `Same`: identical, or one is the other plus only benign catalog suffixes
+//   (Deluxe, Version, Edition, Remastered, ...) or bare numbers.
+// - `Sibling`: one is the other plus a part/volume/disc marker — a different
+//   piece of a multi-part release ("Gangsteritus" vs "Gangsteritus Part 2"),
+//   i.e. two releases that can tie on title and duration. Treated as a hard
+//   mismatch by the matcher.
+// - `Different`: anything else (another album, a compilation, a single, a
+//   remix release). Common and often harmless — Spotify and YouTube file the
+//   same recording under different releases — so the matcher only ranks such
+//   a candidate lower instead of discarding it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AlbumRelation {
+    Same,
+    Sibling,
+    Different,
+}
 
-    // Deliberately does NOT include "pt"/"part"/"vol"/"volume"/"disc"/"cd" —
-    // those mark a genuinely different piece of a multi-part release (a
-    // different disc, volume, or part), not a cosmetic reissue tag like
-    // "Deluxe"/"Remastered". This function's whole reason for existing is
-    // to tell e.g. "Gangsteritus" apart from "Gangsteritus Part 2" — two
-    // different songs on two different releases that can otherwise tie on
-    // title/duration — so treating "Part 2" as benign would silently
-    // confirm the exact mismatch this check is supposed to catch. Letting
-    // a numbered-part suffix fall through to a real reject (rather than a
-    // false confirm) is the same trade-off this file makes everywhere
-    // else: a track reported as unconfirmed is strictly better than one
-    // wrongly confirmed against the wrong disc/volume.
+fn album_relation(a: &str, b: &str) -> AlbumRelation {
+    // Deliberately NOT benign: part/pt/vol/volume/disc/cd (see `Sibling`) and
+    // altered-version words (tribute, remix, karaoke, ...).
     const BENIGN_SUFFIX_WORDS: &[&str] = &[
         "deluxe",
         "expanded",
@@ -1427,34 +1528,76 @@ fn albums_match(a: &str, b: &str) -> bool {
         "remastered",
         "anniversary",
         "edition",
+        "version",
+        "explicit",
+        "clean",
         "bonus",
         "tracks",
         "track",
     ];
 
-    let (shorter, longer) = if a.len() <= b.len() {
-        (a.as_str(), b.as_str())
-    } else {
-        (b.as_str(), a.as_str())
+    let tokens = |name: &str| -> Vec<String> {
+        normalize_for_match(name)
+            .into_iter()
+            .filter(|w| w != "and")
+            .collect()
     };
-
-    // Require the shorter name to appear as a contiguous substring of the
-    // longer one (handles "(Deluxe Edition)" / " - Expanded" style suffixes).
-    if !longer.contains(shorter) {
-        return false;
+    let (ta, tb) = (tokens(a), tokens(b));
+    if ta.is_empty() || tb.is_empty() {
+        return AlbumRelation::Different;
+    }
+    if ta == tb {
+        return AlbumRelation::Same;
     }
 
-    // Strip the shorter name out and inspect whatever remains. Any leftover
-    // token that isn't a benign catalog word (or pure punctuation/digits)
-    // means this is a different release (tribute, cut, remix, karaoke, …).
-    let extra = longer.replacen(shorter, " ", 1);
-    let extra_words = normalize_for_match(&extra);
-    if extra_words.is_empty() {
-        return true;
-    }
-    extra_words
+    let (short, long) = if ta.len() <= tb.len() {
+        (&ta, &tb)
+    } else {
+        (&tb, &ta)
+    };
+    // The shorter name must appear as a contiguous run inside the longer one.
+    let Some(start) = long
+        .windows(short.len())
+        .position(|window| window == short.as_slice())
+    else {
+        return AlbumRelation::Different;
+    };
+    let extras: Vec<&String> = long
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i < start || *i >= start + short.len())
+        .map(|(_, w)| w)
+        .collect();
+
+    if extras
         .iter()
         .all(|w| BENIGN_SUFFIX_WORDS.contains(&w.as_str()) || w.chars().all(|c| c.is_ascii_digit()))
+    {
+        AlbumRelation::Same
+    } else if extras
+        .iter()
+        .any(|w| SEQUEL_MARKER_WORDS.contains(&w.as_str()))
+    {
+        AlbumRelation::Sibling
+    } else {
+        AlbumRelation::Different
+    }
+}
+
+#[allow(dead_code)]
+fn albums_match(a: &str, b: &str) -> bool {
+    album_relation(a, b) == AlbumRelation::Same
+}
+
+// Outcome of `real_title_confirms`. `Weak` = title, padding and altered-version
+// checks all passed but nothing ties the upload to the credited artist except
+// a neutral channel (see `is_neutral_channel`): it can still be chosen, but
+// never over a `Confirmed` candidate.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TitleVerdict {
+    Reject,
+    Confirmed,
+    Weak,
 }
 
 // Re-validates title/artist against a candidate's REAL, non-flat title and
@@ -1464,31 +1607,29 @@ fn albums_match(a: &str, b: &str) -> bool {
 // scoring, since this runs as a pass/fail check on a candidate that
 // already cleared `match_score` on (possibly mismatched) flat data.
 //
-// Returns `false` when the real data actively disagrees with what the
-// flat entry claimed (wrong song, or an altered-version signal that
-// wasn't visible in the flat title/uploader alone) — this is what catches
-// a flat-playlist id/metadata mismatch that would otherwise sail through
-// on a coincidentally-in-tolerance duration. Returns `true` when there's
+// `Reject` when the real data actively disagrees with what the flat entry
+// claimed (wrong song, a sequel/altered-version signal that wasn't visible
+// in the flat title, a different artist's Topic channel) — this is what
+// catches a flat-playlist id/metadata mismatch that would otherwise sail
+// through on a coincidentally-in-tolerance duration. `Confirmed` when there's
 // nothing to check against (real title missing) or the real data agrees;
-// the duration/album checks remain the primary gate either way.
+// `Weak` as described on `TitleVerdict`. The duration/album checks remain the
+// other gates either way.
 fn real_title_confirms(
     real_title: Option<&str>,
     real_uploader: Option<&str>,
     expected_title: &str,
     artist: &str,
-) -> bool {
+) -> TitleVerdict {
     let Some(real_title) = real_title else {
-        return true;
+        return TitleVerdict::Confirmed;
     };
-    if looks_like_hashtag_spam(real_title) {
-        return false;
-    }
-    if looks_like_flag_emoji_remake(real_title) {
-        return false;
+    if looks_like_hashtag_spam(real_title) || looks_like_flag_emoji_remake(real_title) {
+        return TitleVerdict::Reject;
     }
     let expected_words = normalize_for_match(&strip_featured_artist_clause(expected_title));
     if expected_words.is_empty() {
-        return true;
+        return TitleVerdict::Confirmed;
     }
     let real_words = normalize_for_match(real_title);
     let real_uploader = real_uploader.unwrap_or_default();
@@ -1498,22 +1639,18 @@ fn real_title_confirms(
         .iter()
         .chain(real_uploader_words.iter())
         .any(|w| ALTERED_VERSION_SIGNAL_WORDS.contains(&w.as_str()) && !expected_words.contains(w));
-    if is_altered_version_signal {
-        return false;
+    if is_altered_version_signal || has_sequel_marker(&real_words, &expected_words) {
+        return TitleVerdict::Reject;
     }
 
     let overlap = multiset_overlap(&expected_words, &real_words);
     let title_score = overlap as f64 / expected_words.len() as f64;
     if title_score < 0.6 {
-        return false;
+        return TitleVerdict::Reject;
     }
 
-    // Same fix as `match_score`'s `artist_hit`: checked against tokenized
-    // words, not a raw substring search on the lowercased title+uploader
-    // string (see that function's comment for why the raw-substring form
-    // silently defeats this check for any artist name containing a short
-    // word fragment — this is the exact same gate, just run here against
-    // the real, resolved title/uploader instead of the flat one).
+    // Same whole-name, tokenized artist gate as `match_score` (see the
+    // comment there), run against the real resolved title/uploader.
     let artist_hit = split_credited_artists(artist).any(|single_artist| {
         let words = normalize_for_match(single_artist);
         !words.is_empty()
@@ -1521,8 +1658,23 @@ fn real_title_confirms(
                 .iter()
                 .all(|w| real_words.contains(w) || real_uploader_words.contains(w))
     });
-    if !artist_hit {
-        return false;
+    let verdict = if artist_hit {
+        TitleVerdict::Confirmed
+    } else if !real_uploader.trim().is_empty()
+        && title_score >= 1.0
+        && is_neutral_channel(real_uploader)
+    {
+        TitleVerdict::Weak
+    } else {
+        return TitleVerdict::Reject;
+    };
+    // Same foreign-Topic-channel reject as `match_score`, against the real
+    // resolved uploader (the flat entry can lack one, e.g. YouTube Music).
+    if is_topic_channel(real_uploader)
+        && !is_placeholder_topic_channel(real_uploader)
+        && !topic_channel_credits_artist(real_uploader, artist)
+    {
+        return TitleVerdict::Reject;
     }
 
     // Same mashup/compilation reject as `match_score` (see
@@ -1530,63 +1682,56 @@ fn real_title_confirms(
     // catches a flat entry that looked clean but actually resolves to a
     // padded/combined video, not just the reverse.
     let artist_words = credited_artist_words(artist);
-    !has_unrelated_padding(&real_words, &expected_words, &artist_words)
+    if has_unrelated_padding(&real_words, &expected_words, &artist_words) {
+        TitleVerdict::Reject
+    } else {
+        verdict
+    }
 }
 
 // Scores every candidate against the expected title/artist/duration (see
-// `match_score`) and returns the best-scoring one, or `None` if nothing
-// clears the bar. Shared by every lookup tier below so each one applies
-// the exact same validation rather than trusting a raw search order.
+// `match_score`) and returns the best survivor, or `None` if nothing clears
+// the bar. Every lookup tier shares this, so each applies identical
+// validation instead of trusting raw search order.
 //
-// Two things need a real, non-flat lookup on the shortlisted candidates
-// before a final pick is trustworthy — neither can be done from flat
-// search data alone:
+// The top `ALBUM_CHECK_TOP_N` candidates then get a real (non-flat)
+// `fetch_full_video_info` lookup, since flat search data can't support:
 //
-// - Duration. `match_score`'s duration cutoff (`DURATION_TOLERANCE_SECS`)
-//   runs against `YoutubeMatch::duration`, which comes straight from the
-//   flat search entry — and YouTube Music's flat results never populate
-//   that field at all (confirmed: always null), so for that tier the
-//   cutoff silently never fires and every candidate falls into the
-//   "duration unknown, don't penalize" branch. Two otherwise-similar
-//   candidates (e.g. a song and an unrelated "Part 2") can then tie on
-//   score with nothing left to separate them but raw search rank. This
-//   re-checks the same cutoff against the real duration from
-//   `fetch_full_video_info`, and drops a candidate outright on a miss —
-//   even one that scored highest on flat data alone.
-// - Album, when the track's real album (`expected_album`) is known: a
-//   second-pass override, since title/artist/duration alone can't tell
-//   "Gangsteritus" apart from "Gangsteritus Part 2" — both share the main
-//   title words and can land within the duration tolerance — but they're
-//   different releases, and a real album match is decisive where those
-//   aren't.
+// - Real title/uploader (`real_title_confirms`): a flat entry can describe a
+//   different video than the id actually resolves to.
+// - Real duration: `match_score`'s duration cutoff only sees the flat
+//   duration, which YouTube Music never populates, so on that tier it never
+//   fires. A miss against the real duration drops the candidate.
+// - Album, when `expected_album` is known (see `album_relation`): a match
+//   short-circuits with `album_confirmed`; a `Sibling` release ("... Part 2")
+//   is discarded; any other mismatch only RANKS the candidate lower, because
+//   Spotify and YouTube routinely file the same recording under different
+//   releases (single vs album, compilation, deluxe). Treating that as fatal
+//   threw away correct tracks and pushed them to noisier uploads.
 //
-// Both checks only pay for a real lookup on the top `ALBUM_CHECK_TOP_N`
-// already-validated candidates rather than every candidate in the pool. A
-// candidate that fails the real-duration re-check is dropped; among the
-// rest, one lacking album info, or with no album match among the top few,
-// falls back to plain score order — the album check is a tie-breaker on
-// top of the other checks, not a replacement for them.
-// The result of `best_scored_match`, plus whether it was chosen because
-// its *real* album (from `fetch_full_video_info`) positively matched
-// `expected_album` — as opposed to any of the fallback paths (best
-// duration-checked candidate, raw flat-data rank, or simply having no
-// `expected_duration`/`expected_album` to check at all).
+// The lookups run concurrently (bounded globally inside
+// `fetch_full_video_info`) and are then judged in score order, so a track
+// costs about one lookup of wall time instead of up to `ALBUM_CHECK_TOP_N`.
 //
-// This distinction matters because only a genuine album match is
-// independent corroboration strong enough to trust a pick on its own —
-// see this struct's use in `find_validated_audio_match`. Every other path
-// through `best_scored_match` is no stronger than title+duration
-// agreement, which alone can't always tell a genuinely different
-// recording apart from the real one under a matching title (see
-// `find_validated_audio_match`'s "thin-evidence" cross-check). Concretely:
-// a track whose winning candidate is a `music.youtube.com` upload will
-// essentially always end up with `album_confirmed: false` even when
-// `expected_album` was supplied, because that host's uploads don't expose
-// an `album` field to `fetch_full_video_info` at all — only
-// `youtube.com`-hosted uploads do.
+// Surviving candidates are ranked by (artist evidence, album agreement,
+// score order): a candidate that credits the artist beats a `Weak` one, and
+// one whose album is merely unknown beats one with a different album.
+//
+// If every verified candidate is rejected the result is `None` (the caller
+// moves on to the next tier) rather than a guess from flat-rank order.
+//
+// The result of `best_scored_match`. `album_confirmed` is true only when the
+// candidate's real album positively matched `expected_album` — the one
+// independent corroboration strong enough to trust a pick on its own. Every
+// other path (best verified candidate, flat-rank fallback, nothing to
+// check) is only title+duration agreement, which can't tell a different
+// recording under a copied title from the original; see
+// `find_validated_audio_match`'s cross-check. `weak` marks a pick with no
+// artist evidence (`TitleVerdict::Weak`).
 struct ScoredMatch {
     result: YoutubeMatch,
     album_confirmed: bool,
+    weak: bool,
 }
 
 async fn best_scored_match(
@@ -1611,9 +1756,7 @@ async fn best_scored_match(
         expected_duration, expected_album
     ));
     if scored.is_empty() {
-        logger::info(format!(
-            "[Match]   No candidates cleared title/artist/duration scoring"
-        ));
+        logger::info("[Match]   No candidates cleared title/artist/duration scoring".to_string());
     }
     for (score, m) in &scored {
         logger::info(format!(
@@ -1632,144 +1775,132 @@ async fn best_scored_match(
         return scored.into_iter().next().map(|(_, m)| ScoredMatch {
             result: m,
             album_confirmed: false,
+            weak: false,
         });
     }
 
-    let mut best_within_duration: Option<YoutubeMatch> = None;
-    let mut closest_by_duration: Option<(u32, YoutubeMatch)> = None;
+    // Start every real lookup now; they overlap instead of queueing.
+    let lookups: Vec<_> = scored
+        .iter()
+        .take(ALBUM_CHECK_TOP_N)
+        .map(|(_, candidate)| {
+            let app = app.clone();
+            let id = candidate.video_id.clone();
+            let label = candidate.title.clone().unwrap_or_else(|| id.clone());
+            tokio::spawn(async move { fetch_full_video_info(&app, &id, &label).await })
+        })
+        .collect();
+
+    // (weak, album differs, score rank) — smaller is better.
+    let mut best: Option<((bool, bool, usize), YoutubeMatch)> = None;
     let mut any_lookup_succeeded = false;
 
-    for (score, candidate) in scored.iter().take(ALBUM_CHECK_TOP_N) {
-        let info = fetch_full_video_info(
-            app,
-            &candidate.video_id,
-            candidate.title.as_deref().unwrap_or(&candidate.video_id),
-        )
-        .await;
-        if info.is_some() {
-            any_lookup_succeeded = true;
-        }
+    for (rank, lookup) in lookups.into_iter().enumerate() {
+        let (score, candidate) = &scored[rank];
+        let flat_title = candidate.title.as_deref().unwrap_or("?");
+        let info = lookup.await.ok().flatten();
+        any_lookup_succeeded |= info.is_some();
+        let real_title = info.as_ref().and_then(|i| i.title.as_deref());
+        let real_uploader = info.as_ref().and_then(|i| i.uploader.as_deref());
 
-        // A candidate that fails this is the
-        // wrong video regardless of how close its duration happens to be.
-        if !real_title_confirms(
-            info.as_ref().and_then(|i| i.title.as_deref()),
-            info.as_ref().and_then(|i| i.uploader.as_deref()),
-            title,
-            artist,
-        ) {
+        // Wrong video regardless of how close its duration happens to be.
+        let verdict = real_title_confirms(real_title, real_uploader, title, artist);
+        if verdict == TitleVerdict::Reject {
             logger::info(format!(
-                "[Match]   Real-title check (score {:.3}) \"{}\": resolved video is actually \"{}\" ({}) — rejecting, flat listing didn't match the id",
-                score,
-                candidate.title.as_deref().unwrap_or("?"),
-                info.as_ref().and_then(|i| i.title.as_deref()).unwrap_or("?"),
-                info.as_ref().and_then(|i| i.uploader.as_deref()).unwrap_or("?"),
+                "[Match]   Real-title check (score {score:.3}) \"{flat_title}\": resolved video is actually \"{}\" ({}) — rejecting, flat listing didn't match the id",
+                real_title.unwrap_or("?"),
+                real_uploader.unwrap_or("?"),
             ));
             continue;
         }
+        let weak = verdict == TitleVerdict::Weak;
 
-        let real_duration = info
-            .as_ref()
-            .and_then(|i| i.duration)
-            .map(|d| d.round() as u32);
-
-        let mut duration_confirmed = expected_duration.is_none();
-        match (expected_duration, real_duration) {
-            (Some(expected), Some(real)) => {
-                let diff = (real as i64 - expected as i64).unsigned_abs() as u32;
-                if closest_by_duration
-                    .as_ref()
-                    .is_none_or(|(best_diff, _)| diff < *best_diff)
-                {
-                    closest_by_duration = Some((diff, candidate.clone()));
-                }
-                if diff > DURATION_TOLERANCE_SECS {
+        if let Some(expected) = expected_duration {
+            let real_duration = info
+                .as_ref()
+                .and_then(|i| i.duration)
+                .map(|d| d.round() as u32);
+            match real_duration {
+                Some(real) if real.abs_diff(expected) <= DURATION_TOLERANCE_SECS => {}
+                Some(real) => {
                     logger::info(format!(
-                        "[Match]   Duration check (score {:.3}) \"{}\": real duration {}s vs expected {}s (diff {}s) — rejecting",
-                        score,
-                        candidate.title.as_deref().unwrap_or("?"),
-                        real,
-                        expected,
-                        diff
+                        "[Match]   Duration check (score {score:.3}) \"{flat_title}\": real duration {real}s vs expected {expected}s (diff {}s) — rejecting",
+                        real.abs_diff(expected)
                     ));
                     continue;
                 }
-                duration_confirmed = true;
-            }
-            (Some(_), None) => {
-                logger::info(format!(
-                    "[Match]   Duration check (score {:.3}) \"{}\": real duration unavailable (lookup failed) — cannot confirm, rejecting",
-                    score,
-                    candidate.title.as_deref().unwrap_or("?")
-                ));
-                continue;
-            }
-            (None, _) => {}
-        }
-
-        if duration_confirmed && best_within_duration.is_none() {
-            best_within_duration = Some(candidate.clone());
-        }
-
-        let Some(expected_album) = expected_album else {
-            continue;
-        };
-        match info.as_ref().and_then(|i| i.album.as_deref()) {
-            Some(album) => {
-                logger::info(format!(
-                    "[Match]   Album check (score {:.3}) \"{}\": found album {:?}",
-                    score,
-                    candidate.title.as_deref().unwrap_or("?"),
-                    album
-                ));
-                if albums_match(album, expected_album) {
+                None => {
                     logger::info(format!(
-                        "[Match]   -> album matches, selecting this candidate"
+                        "[Match]   Duration check (score {score:.3}) \"{flat_title}\": real duration unavailable (lookup failed) — cannot confirm, rejecting"
                     ));
-                    return Some(ScoredMatch {
-                        result: candidate.clone(),
-                        album_confirmed: true,
-                    });
+                    continue;
                 }
             }
-            None => {
-                logger::info(format!(
-                    "[Match]   Album check (score {:.3}) \"{}\": no album info (lookup failed or field empty)",
-                    score,
-                    candidate.title.as_deref().unwrap_or("?")
-                ));
+        }
+
+        let mut album_differs = false;
+        if let Some(expected_album) = expected_album {
+            match info.as_ref().and_then(|i| i.album.as_deref()) {
+                Some(album) => match album_relation(album, expected_album) {
+                    AlbumRelation::Same => {
+                        logger::info(format!(
+                            "[Match]   Album check (score {score:.3}) \"{flat_title}\": album {album:?} matches {expected_album:?}, selecting this candidate"
+                        ));
+                        return Some(ScoredMatch {
+                            result: candidate.clone(),
+                            album_confirmed: true,
+                            weak,
+                        });
+                    }
+                    AlbumRelation::Sibling => {
+                        logger::info(format!(
+                            "[Match]   Album check (score {score:.3}) \"{flat_title}\": album {album:?} is a different part/volume of {expected_album:?} — disqualifying"
+                        ));
+                        continue;
+                    }
+                    AlbumRelation::Different => {
+                        album_differs = true;
+                        logger::info(format!(
+                            "[Match]   Album check (score {score:.3}) \"{flat_title}\": album {album:?} != expected {expected_album:?} — ranking lower"
+                        ));
+                    }
+                },
+                None => logger::info(format!(
+                    "[Match]   Album check (score {score:.3}) \"{flat_title}\": no album info (lookup failed or field empty)"
+                )),
             }
+        }
+
+        let key = (weak, album_differs, rank);
+        if best.as_ref().map_or(true, |(best_key, _)| key < *best_key) {
+            best = Some((key, candidate.clone()));
         }
     }
 
-    logger::info(format!(
-        "[Match]   No album match among top candidates, falling back to best duration-checked score"
-    ));
-
-    if let Some(m) = best_within_duration {
+    if let Some(((weak, _, _), m)) = best {
+        logger::info(
+            "[Match]   No album match among top candidates, falling back to best verified candidate"
+                .to_string(),
+        );
         return Some(ScoredMatch {
             result: m,
             album_confirmed: false,
+            weak,
         });
     }
-    if let Some((diff, _)) = closest_by_duration {
-        logger::info(format!(
-            "[Match]   Closest real duration still {diff}s off (hard limit {DURATION_TOLERANCE_SECS}s) — rejecting all top-N candidates"
-        ));
-        return None;
-    }
     if any_lookup_succeeded {
-        logger::info(format!(
+        logger::info(
             "[Match]   Every verified top-N candidate failed real-data checks — rejecting"
-        ));
+                .to_string(),
+        );
         return None;
     }
-    // No real data for any top-N candidate at all, so there's nothing to have
-    // disproven the flat-data rank. Trusting it is still better than
-    // returning nothing outright.
+    // No real data for any top-N candidate, so nothing disproved the
+    // flat-data rank. Trusting it beats returning nothing outright.
     scored.into_iter().next().map(|(_, m)| ScoredMatch {
         result: m,
         album_confirmed: false,
+        weak: false,
     })
 }
 
@@ -1916,36 +2047,60 @@ async fn search_youtube_official_first(
     .await
 }
 
-// The single source of truth for "what audio does this download actually
-// use" — called from `download.rs::run_audio_pipeline` in place of the
-// track's analyze-time `preview_url`.
+// Whether the plain-YouTube pick independently vouches for itself, so it may
+// override the Music-tier pick when neither is album-confirmed. It does if:
 //
-// Tries YouTube Music first (`find_youtube_music_match`) since its
-// index leans toward clean official uploads. If nothing there is
-// album-confirmed, falls back to plain YouTube search — official-audio/
-// official-video biased first, then bare (see
-// `search_youtube_official_first`) — but, critically, scores every
-// candidate the exact same way (title/artist/duration via `match_score`)
-// instead of trusting a search result's rank outright. That's the
-// difference from `search_youtube`/`search_youtube_raw`, which power the
-// track's `preview_url` shown during analyze: those never run
-// `match_score` at all, just take ytsearch1's #1 result, so a
-// `preview_url` can already be a live version, a reaction video, or an
-// unrelated song by the same artist. Using it as a silent fallback here is
-// exactly what let a download tag the wrong audio with this track's
-// metadata.
+// - both tiers landed on the same video (genuine agreement), or
+// - its flat search data — duration within `DURATION_TOLERANCE_SECS` of the
+//   expected one, plus a trusted uploader (`is_trusted_uploader`) — stands
+//   on its own.
 //
-// Returns `None` when nothing on either source clears the bar, so the
-// caller can fail the download outright — a "track not found" is a
-// better outcome than a track that plays the wrong song.
+// This used to be "has a duration and a non-empty uploader", which every
+// plain-tier result satisfies, so the plain pick always won no matter who
+// uploaded it. That is how a remix from an unrelated Topic channel replaced
+// a Music-tier pick that had already passed real title and duration checks.
+fn plain_corroborates(
+    plain: &YoutubeMatch,
+    music: Option<&YoutubeMatch>,
+    artist: &str,
+    expected_duration: Option<u32>,
+) -> bool {
+    if music.is_some_and(|m| m.video_id == plain.video_id) {
+        return true;
+    }
+    let trusted = plain
+        .uploader
+        .as_deref()
+        .is_some_and(|u| is_trusted_uploader(u, artist));
+    let duration_ok = match (plain.duration, expected_duration) {
+        (Some(c), Some(e)) => c.abs_diff(e) <= DURATION_TOLERANCE_SECS,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    trusted && duration_ok
+}
+
+// The single source of truth for "what audio does this download use" —
+// called from `download.rs::run_audio_pipeline` instead of the track's
+// analyze-time `preview_url`.
 //
-// `expected_album` is the track's real album/single name from its actual
-// source metadata (Spotify), passed straight through to the
-// album tie-break in `best_scored_match` — pass an empty string when it's
-// unknown, matching how the rest of this codebase treats an unset album
-// (which is always the case for a track sourced directly from a YouTube
-// playlist rather than Spotify). See the branch below for why an
-// *unconfirmed* album check is treated the same as no album at all.
+// Tries YouTube Music first (`find_youtube_music_match`), whose index leans
+// toward clean official uploads; an album-confirmed match there is returned
+// immediately. Otherwise plain YouTube search also runs (official-audio/
+// video biased first, then bare; `search_youtube_official_first`) and the two
+// picks are reconciled via `plain_corroborates`. Both tiers score candidates
+// the same way (`match_score`) instead of trusting search rank, unlike
+// `search_youtube`/`search_youtube_raw` (the analyze-time `preview_url`),
+// which can be a live cut, a reaction video or an unrelated song.
+//
+// Returns `None` when neither tier clears the bar: "track not found" beats a
+// track that plays the wrong song.
+//
+// `expected_album` is the real album/single from source metadata (Spotify);
+// pass "" when unknown (always the case for tracks sourced from a YouTube
+// playlist). When known, `best_scored_match` confirms a candidate on a match,
+// discards a different part/volume of the release, and merely ranks any other
+// mismatch lower.
 pub async fn find_validated_audio_match(
     app: &AppHandle,
     title: &str,
@@ -1957,91 +2112,74 @@ pub async fn find_validated_audio_match(
     let music_match =
         find_youtube_music_match(app, title, artist, expected_duration, expected_album).await;
 
-    if let Some(m) = &music_match {
-        if m.album_confirmed {
-            logger::info(format!(
-                "[Match] [FINAL PICK] (YouTube Music tier, album confirmed): \"{}\" — {}",
-                m.result.title.as_deref().unwrap_or("?"),
-                m.result.url
-            ));
-            return Some(m.result.clone());
-        }
+    if let Some(m) = music_match.as_ref().filter(|m| m.album_confirmed) {
+        logger::info(format!(
+            "[Match] [FINAL PICK] (YouTube Music tier, album confirmed): \"{}\" — {}",
+            m.result.title.as_deref().unwrap_or("?"),
+            m.result.url
+        ));
+        return Some(m.result.clone());
     }
 
-    // Thin-evidence case: either there's no expected_album at all, or
-    // there is one but nothing actually confirmed a match against it. A
-    // YouTube Music flat search entry never carries its own duration or
-    // uploader (both confirmed always null on that tier), so an
-    // unconfirmed Music-tier pick here is vouched for by exactly one
-    // `fetch_full_video_info` call and nothing else independently
-    // corroborating it — title, artist, and duration can all check out on
-    // a video that's genuinely a different recording under a copied title
-    // (this is what let a "remake" through for a YouTube-playlist-sourced
-    // track with no Spotify album to catch it: title matched, artist
-    // matched, even duration matched, on a video that just wasn't the
-    // original). So here, always also run the plain-YouTube tier — which
-    // resolves with real, independently flat-confirmed duration+uploader
-    // data straight off the search result, before any enrichment call —
-    // and prefer whichever side actually has that stronger evidence. This
-    // doubles the yt-dlp work for every track that isn't album-confirmed;
-    // deliberate, since this specific gap is exactly what let a
-    // wrong-audio pick through with every other check passing.
+    // No album confirmation. A Music-tier pick is then vouched for by a single
+    // `fetch_full_video_info` call (its flat entries never carry duration or
+    // uploader), and title/artist/duration can all pass on a different
+    // recording under a copied title. So cross-check against plain YouTube,
+    // whose results carry flat duration+uploader.
     if music_match.is_none() {
-        logger::info(format!(
-            "[Match] YouTube Music tier produced nothing, trying plain YouTube search"
-        ));
+        logger::info(
+            "[Match] YouTube Music tier produced nothing, trying plain YouTube search".to_string(),
+        );
     } else {
-        logger::info(format!(
-            "[Match] No confirmed album match — cross-checking plain YouTube search before committing to the Music-tier pick"
-        ));
+        logger::info("[Match] No confirmed album match — cross-checking plain YouTube search before committing to the Music-tier pick".to_string());
     }
     let plain_match =
         search_youtube_official_first(app, title, artist, expected_duration, expected_album).await;
 
-    // A plain-tier album-confirmed match is just as strong as the
-    // Music-tier fast path above, and `youtube.com` (unlike
-    // `music.youtube.com`) DOES expose an `album` field — so this is
-    // where a genuine album confirmation actually has a real chance to
-    // fire for a track that reached this point.
-    if let Some(m) = &plain_match {
-        if m.album_confirmed {
-            logger::info(format!(
-                "[Match] [FINAL PICK] (plain YouTube tier, album confirmed): \"{}\" — {}",
-                m.result.title.as_deref().unwrap_or("?"),
-                m.result.url
-            ));
-            return Some(m.result.clone());
-        }
+    // `youtube.com` (unlike `music.youtube.com`) exposes `album`, so this is
+    // where a genuine album confirmation can still fire.
+    if let Some(m) = plain_match.as_ref().filter(|m| m.album_confirmed) {
+        logger::info(format!(
+            "[Match] [FINAL PICK] (plain YouTube tier, album confirmed): \"{}\" — {}",
+            m.result.title.as_deref().unwrap_or("?"),
+            m.result.url
+        ));
+        return Some(m.result.clone());
     }
 
-    let plain_is_corroborated = plain_match.as_ref().is_some_and(|m| {
-        m.result.duration.is_some()
-            && m.result
-                .uploader
-                .as_deref()
-                .is_some_and(|u| !u.trim().is_empty())
+    // Plain overrides Music only when it actually corroborates (see
+    // `plain_corroborates`). Otherwise the Music pick stands — it already
+    // passed real title/duration/album checks. Plain is still the last resort
+    // when Music found nothing, labelled so the log shows it's unvouched.
+    // A Music pick with no artist evidence (`weak`) also yields to any plain
+    // pick that does credit the artist.
+    let music_weak = music_match.as_ref().is_some_and(|m| m.weak);
+    let plain_wins = plain_match.as_ref().is_some_and(|p| {
+        plain_corroborates(
+            &p.result,
+            music_match.as_ref().map(|m| &m.result),
+            artist,
+            expected_duration,
+        ) || (music_weak && !p.weak)
     });
-    let picked_plain = plain_is_corroborated;
-    let chosen = if plain_is_corroborated {
-        plain_match.map(|m| m.result)
+    let (chosen, tier) = if plain_wins {
+        (plain_match.map(|m| m.result), "plain YouTube, preferred")
+    } else if let Some(m) = music_match {
+        (Some(m.result), "YouTube Music")
     } else {
-        music_match
-            .map(|m| m.result)
-            .or(plain_match.map(|m| m.result))
+        (
+            plain_match.map(|m| m.result),
+            "plain YouTube, uncorroborated",
+        )
     };
 
     match &chosen {
         Some(m) => logger::info(format!(
-            "[Match] [FINAL PICK] ({} tier, no confirmed album): \"{}\" — {}",
-            if picked_plain {
-                "plain YouTube"
-            } else {
-                "YouTube Music"
-            },
+            "[Match] [FINAL PICK] ({tier} tier, no confirmed album): \"{}\" — {}",
             m.title.as_deref().unwrap_or("?"),
             m.url
         )),
-        None => logger::info(format!("[Match] Nothing validated on either tier")),
+        None => logger::info("[Match] Nothing validated on either tier".to_string()),
     }
     chosen
 }
@@ -2054,6 +2192,7 @@ struct YtDlpFullEntry {
     release_date: Option<String>,
     album: Option<String>,
     artist: Option<String>,
+    track: Option<String>,
     thumbnail: Option<String>,
     thumbnails: Option<Vec<YtThumb>>,
     duration: Option<f64>,
@@ -2061,18 +2200,43 @@ struct YtDlpFullEntry {
     uploader: Option<String>,
 }
 
+// Every full lookup is a separate yt-dlp process (~12 s in practice), so they
+// are (a) capped process-wide — matching verifies several candidates per track
+// across parallel workers, and unbounded fan-out gets throttled by YouTube —
+// and (b) cached by video id: the same id turned up repeatedly across one
+// playlist run, and the post-pick metadata fetch (`fetch_music_metadata`)
+// re-reads the very video that was just verified. Only the raw JSON line is
+// cached, and only on success, so a transient failure is retried.
+const INFO_LOOKUP_CONCURRENCY: usize = 6;
+const INFO_CACHE_MAX_ENTRIES: usize = 1024;
+static INFO_LOOKUP_PERMITS: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(INFO_LOOKUP_CONCURRENCY));
+static INFO_CACHE: Lazy<Mutex<HashMap<String, String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
 async fn fetch_full_video_info(
     app: &AppHandle,
     video_id: &str,
     label: &str,
 ) -> Option<YtDlpFullEntry> {
+    let cached = INFO_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(video_id)
+        .cloned();
+    if let Some(entry) = cached.and_then(|raw| serde_json::from_str::<YtDlpFullEntry>(&raw).ok()) {
+        logger::info(format!(
+            "[YouTube] Found track \"{label}\" ({video_id}) (cached lookup)"
+        ));
+        return Some(entry);
+    }
+
+    let _permit = INFO_LOOKUP_PERMITS.acquire().await.ok();
     let sidecar = app.shell().sidecar("sonic-yt-dlp").ok()?;
     let url = format!("https://www.youtube.com/watch?v={video_id}");
     let mut args = vec![
         "--dump-json".to_string(),
         "--no-warnings".to_string(),
         "--extractor-args".to_string(),
-        "youtube:player_client=web, android".to_string(),
+        "youtube:player_client=web,android".to_string(),
     ];
     args.extend(cookie_args());
     args.push(url);
@@ -2086,9 +2250,22 @@ async fn fetch_full_video_info(
         return None;
     }
 
-    let entry = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find_map(|line| serde_json::from_str::<YtDlpFullEntry>(line).ok());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed = stdout.lines().find_map(|line| {
+        serde_json::from_str::<YtDlpFullEntry>(line)
+            .ok()
+            .map(|entry| (line.to_string(), entry))
+    });
+    let entry = parsed.map(|(raw, entry)| {
+        let mut cache = INFO_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if cache.len() >= INFO_CACHE_MAX_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(video_id.to_string(), raw);
+        entry
+    });
 
     if let Some(entry) = &entry {
         match &entry.title {
@@ -2140,18 +2317,100 @@ fn year_from_full_entry(entry: &YtDlpFullEntry) -> Option<String> {
 
 const YOUTUBE_ENRICH_CONCURRENCY: usize = 6;
 
-// Backfills release year (and album, when available) for tracks resolved straight
-// from YouTube — i.e. when there's no Spotify metadata to draw on at all, such as a
-// pasted YouTube playlist link. Needs one extra, non-flat yt-dlp call per track, so
-// it's only worth paying for on tracks that are actually going to be used — not
-// disposable search-result candidates (see `direct_search_tracks`, which skips this).
+// Applies one video's album-level data to every track of an album playlist.
+// Official album playlists (`OLAK5uy...`) share album, release year and cover
+// across all tracks, so the per-track lookups only repeated the same answer.
+// The album artist is the playlist's single artist; for a compilation (track
+// artists differ) it is "Various Artists" rather than whoever is listed first.
+fn apply_album_metadata(tracks: &mut [Track], info: &YtDlpFullEntry, playlist_album: &str) {
+    let album = info
+        .album
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .unwrap_or(playlist_album)
+        .to_string();
+    let year = year_from_full_entry(info);
+    let cover = pick_best_thumbnail(&info.thumbnails, &info.thumbnail);
+
+    let first_artist = tracks.first().map(|t| t.artist.clone());
+    let uniform = tracks
+        .iter()
+        .all(|t| Some(&t.artist) == first_artist.as_ref());
+    let shared_artist = if uniform {
+        first_artist.filter(|a| a != "Unknown Artist")
+    } else {
+        Some("Various Artists".to_string())
+    };
+    let album_artist = shared_artist.or_else(|| {
+        info.artist
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(str::to_string)
+    });
+
+    for track in tracks.iter_mut() {
+        track.album = album.clone();
+        if track.year.is_empty() {
+            if let Some(year) = &year {
+                track.year = year.clone();
+            }
+        }
+        if track.album_artist.is_none() {
+            track.album_artist = album_artist.clone();
+        }
+        if let Some(cover) = &cover {
+            track.cover_url = cover.clone();
+        }
+    }
+}
+
+// Backfills release year, album and cover (plus a clean artist/title where
+// YouTube Music catalogues the song) for tracks resolved straight from YouTube
+// — i.e. when there's no Spotify metadata to draw on at all, such as a pasted
+// YouTube playlist link. The track list displays these fields, so this runs at
+// analyze time. Needs a non-flat yt-dlp call per track, so it's only worth
+// paying for on tracks that are actually going to be used — not disposable
+// search-result candidates (see `direct_search_tracks`, which skips this).
+//
+// `album_name` is `Some` for an album playlist: then ONE lookup (the first
+// track) supplies album, year and cover for all of them (`apply_album_metadata`).
+// Every lookup is cached by video id (see `fetch_full_video_info`), so the
+// download step does not repeat it.
 //
 // Emits the second half of the combined analyze-progress bar (see
 // `run_yt_dlp_streaming`'s `has_second_phase`): listing filled 0–N, this fills N–2N,
 // so the bar keeps moving smoothly instead of freezing at "N of N" while this runs.
-async fn enrich_tracks_with_youtube_metadata(app: &AppHandle, tracks: &mut [Track]) {
+async fn enrich_tracks_with_youtube_metadata(
+    app: &AppHandle,
+    tracks: &mut [Track],
+    album_name: Option<&str>,
+) {
     let listing_total = tracks.len() as u32;
     let overall_total = (listing_total * 2).max(1);
+    let emit_progress = |done: u32| {
+        let _ = app.emit(
+            "analyze-progress",
+            AnalyzeProgress {
+                completed: listing_total + done,
+                total: overall_total,
+            },
+        );
+    };
+
+    if let (Some(album_name), Some(first)) = (album_name, tracks.first()) {
+        let (first_id, first_title) = (first.id.clone(), first.title.clone());
+        if let Some(info) = fetch_full_video_info(app, &first_id, &first_title).await {
+            apply_album_metadata(tracks, &info, album_name);
+            for done in 1..=listing_total {
+                emit_progress(done);
+            }
+            return;
+        }
+        // The shared lookup failed: fall back to per-track lookups below.
+    }
+
     let semaphore = Arc::new(Semaphore::new(YOUTUBE_ENRICH_CONCURRENCY));
     let mut handles = Vec::with_capacity(tracks.len());
     for (i, track) in tracks.iter().enumerate() {
@@ -2170,20 +2429,44 @@ async fn enrich_tracks_with_youtube_metadata(app: &AppHandle, tracks: &mut [Trac
     for handle in handles {
         if let Ok((i, Some(info))) = handle.await {
             if let Some(track) = tracks.get_mut(i) {
+                let info_artist = info
+                    .artist
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
+                    .map(str::to_string);
+                let info_track = info
+                    .track
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string);
+
                 if track.year.is_empty() {
                     if let Some(year) = year_from_full_entry(&info) {
                         track.year = year;
                     }
                 }
-                if let Some(album) = info.album.filter(|a| !a.trim().is_empty()) {
-                    track.album = album;
-                }
-                if track.album_artist.is_none() {
-                    if let Some(artist) = info.artist.filter(|a| !a.trim().is_empty()) {
-                        track.album_artist = Some(artist);
+                if let Some(album) = info
+                    .album
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
+                {
+                    track.album = album.to_string();
+                    if track.album_artist.is_none() {
+                        track.album_artist = info_artist.clone();
                     }
                 }
-
+                // YouTube Music's own catalogue entry beats the raw upload
+                // title / uploader name ("Song" by "Artist", not
+                // "Artist - Song (Official Video)" by "Artist - Topic").
+                if let Some(song) = info_track {
+                    track.title = song;
+                }
+                if let Some(artist) = info_artist {
+                    track.artist = artist;
+                }
                 if let Some(cover) = pick_best_thumbnail(&info.thumbnails, &info.thumbnail) {
                     track.cover_url = cover;
                 }
@@ -2191,14 +2474,49 @@ async fn enrich_tracks_with_youtube_metadata(app: &AppHandle, tracks: &mut [Trac
         }
 
         enrich_completed += 1;
-        let _ = app.emit(
-            "analyze-progress",
-            AnalyzeProgress {
-                completed: listing_total + enrich_completed,
-                total: overall_total,
-            },
-        );
+        emit_progress(enrich_completed);
     }
+}
+
+// The artist a channel name implies. "<Artist> - Topic" is YouTube's auto
+// channel for official audio, so the suffix is not part of the name (tags and
+// filenames used to read "Rema - Topic"). Placeholder Topic channels
+// ("Release - Topic") imply no artist at all.
+fn artist_from_uploader(uploader: &str) -> Option<String> {
+    let name = uploader.trim();
+    if name.is_empty() || is_placeholder_topic_channel(name) {
+        return None;
+    }
+    if is_topic_channel(name) {
+        // The suffix is ASCII; `get` keeps odd Unicode names from panicking.
+        let cut = name.len().checked_sub("- topic".len())?;
+        let base = name.get(..cut)?.trim_end();
+        return (!base.is_empty()).then(|| base.to_string());
+    }
+    Some(name.to_string())
+}
+
+// A track that came straight from YouTube (pasted video/playlist link or a
+// direct search result) carries its own source video: `entries_to_tracks` makes
+// its id the video id and its preview_url that video's URL. Spotify tracks get
+// a random id, so for them this is `None` and the matcher must search.
+//
+// The user chose this exact video, so downloads use it as-is instead of
+// re-searching with a title/artist taken from the video itself ("X - Song
+// (Official Video)" by "Y - Topic").
+pub fn source_video_match(track: &Track) -> Option<YoutubeMatch> {
+    let video_id = extract_youtube_id(track.preview_url.as_deref()?)?;
+    if video_id != track.id {
+        return None;
+    }
+    Some(YoutubeMatch {
+        url: format!("https://www.youtube.com/watch?v={video_id}"),
+        video_id,
+        duration: Some(track.duration),
+        thumbnail: None,
+        title: Some(track.title.clone()),
+        uploader: Some(track.artist.clone()),
+    })
 }
 
 fn entries_to_tracks(entries: Vec<YtDlpFlatEntry>, fallback_title: &str) -> Vec<Track> {
@@ -2211,7 +2529,11 @@ fn entries_to_tracks(entries: Vec<YtDlpFlatEntry>, fallback_title: &str) -> Vec<
         .map(|(i, m)| Track {
             id: m.video_id.clone(),
             title: m.title.unwrap_or_else(|| fallback_title.to_string()),
-            artist: m.uploader.unwrap_or_else(|| "Unknown Artist".to_string()),
+            artist: m
+                .uploader
+                .as_deref()
+                .and_then(artist_from_uploader)
+                .unwrap_or_else(|| "Unknown Artist".to_string()),
             album: String::new(),
             album_artist: None,
             year: String::new(),
@@ -2238,7 +2560,7 @@ pub async fn resolve_youtube_url(app: &AppHandle, url: &str) -> Vec<Track> {
     let canonical = format!("https://www.youtube.com/watch?v={video_id}");
     let entries = run_yt_dlp_direct(app, &canonical).await;
     let mut tracks = entries_to_tracks(entries, url);
-    enrich_tracks_with_youtube_metadata(app, &mut tracks).await;
+    enrich_tracks_with_youtube_metadata(app, &mut tracks, None).await;
     tracks
 }
 
@@ -2261,7 +2583,9 @@ pub async fn resolve_youtube_playlist(app: &AppHandle, url: &str) -> (String, bo
         .unwrap_or(raw_title);
 
     let mut tracks = entries_to_tracks(entries, &playlist_name);
-    enrich_tracks_with_youtube_metadata(app, &mut tracks).await;
+    // An album playlist shares album/year/cover across tracks: one lookup, not N.
+    let album_name = is_album.then_some(playlist_name.as_str());
+    enrich_tracks_with_youtube_metadata(app, &mut tracks, album_name).await;
     (playlist_name, is_album, tracks)
 }
 
