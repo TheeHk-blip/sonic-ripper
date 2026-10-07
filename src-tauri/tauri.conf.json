@@ -54,7 +54,9 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZCMzlBQ0NFODRCRjFBMjQKUldRa0dyK0V6cXc1YTVRWGpUL2NrRGN3TFZnVTAxdDVuZUxPTTJSdVE5VEdlYXBLVjJ2UWY0VmQK",
-      "endpoints": ["https://github.com/TheeHk-blip/sonic/releases/latest/download/latest.json"]
+      "endpoints": [
+        "https://github.com/TheeHk-blip/sonic-ripper/releases/latest/download/latest.json"
+      ]
     }
   }
 }
