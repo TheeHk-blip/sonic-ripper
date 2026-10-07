@@ -201,6 +201,12 @@ pub fn run() {
         .manage(cancel::DownloadRegistry::default())
         .setup(|app| {
             logger::init(app.handle().clone());
+
+            let sync_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                settings::sync_persisted_youtube_cookies(&sync_handle).await;
+            });
+
             let handle = app.handle().clone();
             std::panic::set_hook(Box::new(move |info| {
                 let _ = handle.emit(
@@ -225,6 +231,7 @@ pub fn run() {
             settings::set_youtube_cookies,
             settings::set_cookies_from_browser,
             settings::set_download_concurrency,
+            settings::set_ytdlp_clients,
             set_spotify_client_token_cmd,
             get_spotify_client_token_cmd,
             set_pathfinder_hash_cmd,

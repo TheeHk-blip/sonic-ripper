@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { DownloadSettings, AudioFormat, Bitrate } from '../types';
 import { Settings, FileAudio, Disc, FileVideo, FolderOpen, RefreshCw } from 'lucide-react';
-import { getSettings, pickDownloadFolder } from '../lib/api';
+import { getSettings, pickDownloadFolder, setYtdlpClients } from '../lib/api';
 
 interface SettingsPanelProps {
   settings: DownloadSettings;
@@ -12,16 +12,54 @@ const MIN_CONCURRENCY = 1;
 const MAX_CONCURRENCY = 16;
 const DEFAULT_CONCURRENCY = 6;
 
+// yt-dlp client chain (Advanced section). Mirrors the backend's validation so
+// mistakes are caught before saving; the backend re-validates anyway.
+const MAX_CLIENT_ENTRIES = 6;
+const MAX_CLIENTS_LEN = 200;
+const CLIENT_ENTRY = /^[A-Za-z0-9_,+-]+$/;
+
+function validateClientChain(raw: string): string | null {
+  if (raw.length > MAX_CLIENTS_LEN) return `Too long (max ${MAX_CLIENTS_LEN} characters).`;
+  const entries = raw
+    .split(';')
+    .map(e => e.trim())
+    .filter(Boolean);
+  if (entries.length > MAX_CLIENT_ENTRIES) return `Too many attempts (max ${MAX_CLIENT_ENTRIES}).`;
+  const bad = entries.find(e => e.toLowerCase() !== 'default' && !CLIENT_ENTRY.test(e));
+  return bad ? `Invalid client "${bad}": use only letters, digits and _ , - +` : null;
+}
+
+const CLIENT_PRESETS: { value: string; label: string; desc: string }[] = [
+  {
+    value: '',
+    label: 'Automatic (recommended)',
+    desc: "Tries yt-dlp's own choice first, then built-in fallbacks if YouTube rejects it.",
+  },
+  {
+    value: 'default',
+    label: 'yt-dlp defaults only',
+    desc: 'Never override the client. No fallbacks, so failures surface faster.',
+  },
+];
+
 export default function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
   const [downloadFolder, setDownloadFolder] = useState<string | null>(null);
   const [folderLoading, setFolderLoading] = useState(true);
   const [folderPicking, setFolderPicking] = useState(false);
   const [isEditingCookies, setIsEditingCookies] = useState(false);
+  const [clientSpec, setClientSpec] = useState(''); // saved value ('' = automatic)
+  const [clientDraft, setClientDraft] = useState(''); // text being edited
+  const [clientError, setClientError] = useState<string | null>(null);
+  const [clientSaving, setClientSaving] = useState(false);
   const hasPastedCookies = !!settings.youtubeCookies?.trim();
 
   useEffect(() => {
     getSettings()
-      .then(s => setDownloadFolder(s.downloadFolder))
+      .then(s => {
+        setDownloadFolder(s.downloadFolder);
+        setClientSpec(s.ytdlpClients ?? '');
+        setClientDraft(s.ytdlpClients ?? '');
+      })
       .catch(() => setDownloadFolder(null))
       .finally(() => setFolderLoading(false));
   }, []);
@@ -36,9 +74,28 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
     }
   };
 
+  const saveClients = async (value: string) => {
+    const problem = validateClientChain(value);
+    if (problem) {
+      setClientError(problem);
+      return;
+    }
+    setClientSaving(true);
+    setClientError(null);
+    try {
+      const saved = await setYtdlpClients(value.trim() || null);
+      setClientSpec(saved.ytdlpClients ?? '');
+      setClientDraft(saved.ytdlpClients ?? '');
+    } catch (e) {
+      setClientError(e instanceof Error ? e.message : 'Could not save the client chain.');
+    } finally {
+      setClientSaving(false);
+    }
+  };
+
   const handleFormatChange = (format: AudioFormat) => {
     const defaultBitrate: Bitrate = format === 'flac' || format === 'wav' ? 'lossless' : '320k';
-    onChange({ format, bitrate: defaultBitrate });
+    onChange({ ...settings, format, bitrate: defaultBitrate });
   };
 
   const handleBitrateChange = (bitrate: Bitrate) => {
@@ -622,6 +679,89 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
           )}
         </div>
       </div>
+
+      {/* Download engine (advanced): which YouTube clients yt-dlp may use */}
+      <details className="border-t border-olive pt-6 mt-6" id="advanced-engine">
+        <summary className="text-sm uppercase tracking-[0.2em] font-semibold cursor-pointer select-none">
+          Advanced: Download Engine
+        </summary>
+        <div className="mt-4 flex flex-col gap-3">
+          <p className="text-[10px] md:text-xs text-rust leading-relaxed">
+            YouTube keeps changing which request &quot;clients&quot; it accepts. By default the app
+            tries yt-dlp&apos;s own choice first and falls back automatically. Only change this if
+            downloads keep failing. Applies to the next download.
+          </p>
+
+          {CLIENT_PRESETS.map(preset => {
+            const active = clientSpec === preset.value;
+            return (
+              <button
+                key={preset.value || 'automatic'}
+                type="button"
+                id={`btn-ytdlp-clients-${preset.value || 'automatic'}`}
+                disabled={clientSaving}
+                onClick={() => saveClients(preset.value)}
+                className={`w-full flex items-center justify-between p-3.5 rounded-md border-2 text-left transition-all duration-300 cursor-pointer disabled:opacity-40 ${
+                  active ? 'border-gold' : 'border-rust opacity-70 hover:opacity-100 scale-98'
+                }`}
+              >
+                <div>
+                  <span className={`uppercase tracking-wider block ${active ? 'text-gold' : ''}`}>
+                    {preset.label}
+                  </span>
+                  <span className="text-xs mt-0.5 block">{preset.desc}</span>
+                </div>
+                <div
+                  className={`w-4 h-4 rounded-full flex items-center justify-center ${
+                    active ? 'bg-gold' : 'border'
+                  }`}
+                >
+                  {active && <div className="w-1.5 h-1.5 bg-black rounded-full" />}
+                </div>
+              </button>
+            );
+          })}
+
+          <div>
+            <span className="block text-xs font-black uppercase tracking-wider text-cream mb-1">
+              Custom client chain
+            </span>
+            <span className="block text-[10px] md:text-xs text-rust leading-relaxed font-mono mb-2">
+              Attempts separated by &quot;;&quot; and tried in order. Example:
+              default;android,web;tv
+            </span>
+            <div className="flex gap-2">
+              <input
+                id="input-ytdlp-clients"
+                type="text"
+                value={clientDraft}
+                onChange={e => {
+                  setClientDraft(e.target.value);
+                  setClientError(null);
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') saveClients(clientDraft);
+                }}
+                placeholder="default;android,web;tv"
+                spellCheck={false}
+                autoComplete="off"
+                className="flex-1 min-w-0 p-3 bg-charcoal border-2 border-rust/30 rounded-md text-[10px] font-mono placeholder-cream/30 focus:outline-none focus:border-olive/40 transition-all"
+              />
+              <button
+                type="button"
+                id="btn-apply-ytdlp-clients"
+                disabled={clientSaving || clientDraft.trim() === clientSpec}
+                onClick={() => saveClients(clientDraft)}
+                className="shrink-0 px-3 py-2 bg-gold/40 rounded-sm text-[10px] font-black uppercase tracking-wider flex items-center gap-2 cursor-pointer disabled:opacity-40"
+              >
+                {clientSaving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                Apply
+              </button>
+            </div>
+            {clientError && <p className="mt-2 text-xs text-rust">{clientError}</p>}
+          </div>
+        </div>
+      </details>
     </div>
   );
 }

@@ -38,6 +38,7 @@ export interface AppSettings {
   downloadFolder: string | null;
   youtubeCookies?: string | null;
   cookiesFromBrowser?: string | null;
+  ytdlpClients?: string | null;
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -69,6 +70,7 @@ export interface DownloadOptions {
   cookiesFromBrowser?: string;
   sampleRate?: string;
   videoQuality?: string;
+  ytdlpClients?: string;
   namingPattern: string;
   embedId3Tags: boolean;
   albumFolder?: string;
@@ -90,7 +92,6 @@ export interface DownloadBatchOptions extends DownloadOptions {
   saveInFolder?: boolean;
   skipMissingTracks?: boolean;
   isAlbum: boolean;
-  /** Parallel download count, 1–16. Omit to use the backend default. */
   concurrency?: number;
 }
 
@@ -146,17 +147,25 @@ export async function cancelBatch(trackIds: string[]): Promise<number> {
   }
 }
 
-export async function setYoutubeCookies(cookies?: string | null): Promise<AppSettings> {
+export async function setYtdlpClients(clients?: string | null): Promise<AppSettings> {
   try {
-    return await invoke<AppSettings>('set_youtube_cookies', { cookies: cookies || null });
+    return await invoke<AppSettings>('set_ytdlp_clients', { clients: clients?.trim() || null });
   } catch (err) {
     throw toError(err);
   }
 }
 
-export async function setYoutubeCookiesFromBrowser(browser?: string | null): Promise<AppSettings> {
+export async function setYoutubeCookies(cookies?: string | null) {
   try {
-    return await invoke<AppSettings>('set_cookies_from_browser', { browser: browser || null });
+    return await invoke<AppSettings>('set_youtube_cookies', { cookies: cookies ?? null });
+  } catch (err) {
+    throw toError(err);
+  }
+}
+
+export async function setYoutubeCookiesFromBrowser(browser?: string | null) {
+  try {
+    return await invoke<AppSettings>('set_cookies_from_browser', { browser: browser ?? null });
   } catch (err) {
     throw toError(err);
   }

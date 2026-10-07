@@ -182,19 +182,50 @@ export default function App() {
       .catch(err => console.error('[App] failed to load persisted cookies:', err));
   }, []);
 
-  const cookieSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cookieTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const browserTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const hydrated = useRef(false);
+
+  useEffect(() => {
+    getSettings()
+      .then(s => {
+        console.warn('[App] hydrate cookies:', !!s.youtubeCookies, s.cookiesFromBrowser);
+        setSettings(prev => ({
+          ...prev,
+          youtubeCookies: s.youtubeCookies ?? prev.youtubeCookies,
+          cookiesFromBrowser: s.cookiesFromBrowser ?? prev.cookiesFromBrowser,
+        }));
+      })
+      .catch(err => console.error('[App] failed to load persisted cookies:', err))
+      .finally(() => {
+        hydrated.current = true;
+      });
+  }, []);
 
   const handleSettingsChange = (next: DownloadSettings) => {
+    const cookiesChanged =
+      next.youtubeCookies !== undefined && next.youtubeCookies !== settings.youtubeCookies;
+    const browserChanged = next.cookiesFromBrowser !== settings.cookiesFromBrowser;
     setSettings(next);
-    if (cookieSyncTimer.current) clearTimeout(cookieSyncTimer.current);
-    cookieSyncTimer.current = setTimeout(() => {
-      setYoutubeCookies(next.youtubeCookies).catch(err =>
-        console.error('[App] failed to sync YouTube cookies:', err)
-      );
-      setYoutubeCookiesFromBrowser(next.cookiesFromBrowser).catch(err =>
-        console.error('[App] failed to sync cookies-from-browser:', err)
-      );
-    }, 400);
+
+    if (!hydrated.current) return;
+    if (cookiesChanged) {
+      if (cookieTimer.current) clearTimeout(cookieTimer.current);
+      cookieTimer.current = setTimeout(() => {
+        setYoutubeCookies(next.youtubeCookies ?? '').catch(err =>
+          console.error('[App] failed to sync YouTube cookies:', err)
+        );
+      }, 400);
+    }
+    if (browserChanged) {
+      if (browserTimer.current) clearTimeout(browserTimer.current);
+      browserTimer.current = setTimeout(() => {
+        setYoutubeCookiesFromBrowser(next.cookiesFromBrowser ?? '').catch(err =>
+          console.error('[App] failed to sync cookies-from-browser:', err)
+        );
+      }, 400);
+    }
   };
 
   const handlePlayTrack = (track: Track) => {
@@ -265,8 +296,6 @@ export default function App() {
       await downloadTrack(trackToDownload, {
         format: settings.format,
         bitrate: settings.bitrate,
-        youtubeCookies: settings.youtubeCookies,
-        cookiesFromBrowser: settings.cookiesFromBrowser,
         sampleRate: settings.sampleRate,
         videoQuality: settings.videoQuality,
         namingPattern: settings.namingPattern || 'artist_title',
@@ -325,8 +354,6 @@ export default function App() {
         format: settings.format,
         bitrate: settings.bitrate,
         playlistName: playlistName,
-        youtubeCookies: settings.youtubeCookies,
-        cookiesFromBrowser: settings.cookiesFromBrowser,
         sampleRate: settings.sampleRate,
         videoQuality: settings.videoQuality,
         skipMissingTracks: settings.skipMissingTracks,
@@ -409,8 +436,6 @@ export default function App() {
           await downloadTrack(track, {
             format: settings.format,
             bitrate: settings.bitrate,
-            youtubeCookies: settings.youtubeCookies,
-            cookiesFromBrowser: settings.cookiesFromBrowser,
             sampleRate: settings.sampleRate,
             videoQuality: settings.videoQuality,
             namingPattern: settings.namingPattern || 'artist_title',

@@ -1,6 +1,6 @@
 [package]
 name = "sonicripper"
-version = "1.0.2"
+version = "1.0.3"
 description = "A Music downloader App"
 authors = ["TheeHk-blip"]
 edition = "2021"
