@@ -27,7 +27,7 @@ enum StreamKind {
     Video,
 }
 
-const AUDIO_CLIENT_CHAIN: &[Option<&str>] = &[None, Some("android,web"), Some("tv")];
+const AUDIO_CLIENT_CHAIN: &[Option<&str>] = &[Some("web_music"), None, Some("android,web"), Some("tv")];
 const VIDEO_CLIENT_CHAIN: &[Option<&str>] = &[None, Some("web_embedded,tv"), Some("tv")];
 const RETRY_ON_BOT_CHALLENGE: bool = true;
 
@@ -146,8 +146,12 @@ fn is_client_dependent(e: &AppError) -> bool {
 
 fn append_player_client_arg(args: &mut Vec<String>, client: Option<&str>) {
     if let Some(c) = client {
+        let mut spec = format!("youtube:player_client={c}");
+        if c.split(',').any(|p| p == "web_music") {
+            spec.push_str(";formats=missing_pot");
+        }
         args.push("--extractor-args".into());
-        args.push(format!("youtube:player_client={c}"));
+        args.push(spec);
     }
 }
 
