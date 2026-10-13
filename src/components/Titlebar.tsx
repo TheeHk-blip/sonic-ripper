@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { UnlistenFn } from '@tauri-apps/api/event';
+import { getVersion } from '@tauri-apps/api/app';
 import { Minus, Square, Copy, X, AudioLines } from 'lucide-react';
 import { UpdateBanner } from './UpdateBanner';
 
@@ -8,6 +9,12 @@ const appWindow = getCurrentWindow();
 
 export default function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false);
+  const [version, setVersion] = useState('');
+  useEffect(() => {
+    getVersion()
+      .then(setVersion)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -41,6 +48,9 @@ export default function TitleBar() {
         <span className="pointer-events-none font-bold font-display text-lg tracking-wider">
           Sonic Ripper
         </span>
+        {version && (
+          <span className="pointer-events-none text-xs opacity-60 self-end pb-1">v{version}</span>
+        )}
       </div>
 
       <UpdateBanner />
