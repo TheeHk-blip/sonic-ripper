@@ -189,6 +189,8 @@ jobs:
           echo "Re-uploading repackaged AppImage and signature to release ${{ github.ref_name }}"
           gh release upload "${{ github.ref_name }}" "$APPIMAGE_PATH" "$APPIMAGE_PATH.sig" --repo ${{ github.repository }} --clobber
 
+  # Runs once after every matrix job has finished, so it can't race with
+  # tauri-action's own edits to latest.json.
   finalize-release:
     needs: build-desktop
     runs-on: ubuntu-22.04
@@ -200,7 +202,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install minisign
-        run: sudo apt-get update && sudo apt-get install -y minisign
+        run: |
+          curl -fsSL -o minisign.tar.gz https://github.com/jedisct1/minisign/releases/download/0.11/minisign-0.11-linux.tar.gz
+          tar xzf minisign.tar.gz
+          BIN=$(find . -path '*x86_64/minisign' -type f | head -n 1)
+          test -n "$BIN"
+          sudo install -m 0755 "$BIN" /usr/local/bin/minisign
+          minisign -v
 
       - name: Download release files
         run: |
