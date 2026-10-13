@@ -55,8 +55,17 @@ fn get_album_hash_cmd() -> Option<String> {
 }
 
 #[tauri::command]
+fn log_frontend(level: String, msg: String) {
+    match level.as_str() {
+        "error" => logger::error(msg),
+        "warn" => logger::warn(msg),
+        _ => logger::info(msg),
+    }
+}
+
+#[tauri::command]
 async fn analyze(app: AppHandle, url: String) -> Result<AnalyzeResult, AppError> {
-    logger::info(format!("analyze: {url}"));
+    logger::info(format!("[Analyze]: {url}"));
     settings::sync_persisted_youtube_cookies(&app).await;
 
     if !spotify::looks_like_spotify_link(&url) {
@@ -201,6 +210,7 @@ pub fn run() {
         .manage(cancel::DownloadRegistry::default())
         .setup(|app| {
             logger::init(app.handle().clone());
+            logger::info(format!("SonicRipper {}", app.package_info().version));
 
             let sync_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -222,6 +232,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             analyze,
+            log_frontend,
             download::download_track,
             download::download_batch,
             cancel::cancel_download,
