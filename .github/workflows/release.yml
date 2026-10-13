@@ -166,10 +166,70 @@ jobs:
           echo "APPIMAGE_PATH=$APPIMAGE" >> "$GITHUB_ENV"
           rm -rf squashfs-root appimagetool
 
-      - name: Re-upload fixed AppImage to draft release
+      # Repacking changes the AppImage bytes, so the signature tauri-action
+      # created earlier no longer matches. Sign the final file again.
+      - name: Re-sign repackaged AppImage
+        if: matrix.platform == 'ubuntu-22.04' && env.REPACKAGED == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          rm -f "$APPIMAGE_PATH.sig"
+          pnpm tauri signer sign \
+            -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            "$APPIMAGE_PATH"
+          test -s "$APPIMAGE_PATH.sig"
+
+      - name: Re-upload fixed AppImage and signature to draft release
         if: matrix.platform == 'ubuntu-22.04' && env.REPACKAGED == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Re-uploading repackaged AppImage to release ${{ github.ref_name }}"
-          gh release upload "${{ github.ref_name }}" "$APPIMAGE_PATH" --repo ${{ github.repository }} --clobber
+          echo "Re-uploading repackaged AppImage and signature to release ${{ github.ref_name }}"
+          gh release upload "${{ github.ref_name }}" "$APPIMAGE_PATH" "$APPIMAGE_PATH.sig" --repo ${{ github.repository }} --clobber
+
+  finalize-release:
+    needs: build-desktop
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      - name: Download release files
+        run: |
+          mkdir -p dl
+          gh release download "${{ github.ref_name }}" --repo "${{ github.repository }}" \
+            --dir dl --clobber \
+            --pattern latest.json \
+            --pattern "*_amd64.AppImage" \
+            --pattern "*_amd64.AppImage.sig"
+
+      - name: Point latest.json at the final Linux signature
+        run: |
+          python3 - <<'EOF'
+          import glob, json
+          sig = open(glob.glob('dl/*_amd64.AppImage.sig')[0]).read().strip()
+          d = json.load(open('dl/latest.json'))
+          for k in ('linux-x86_64', 'linux-x86_64-appimage'):
+              d['platforms'][k]['signature'] = sig
+          json.dump(d, open('dl/latest.json', 'w'), indent=2)
+          EOF
+          gh release upload "${{ github.ref_name }}" dl/latest.json --repo "${{ github.repository }}" --clobber
+
+      - name: Verify the AppImage against the published signature
+        run: |
+          python3 - <<'EOF'
+          import base64, json
+          cfg = json.load(open('src-tauri/tauri.conf.json'))
+          open('dl/pub.pub', 'wb').write(base64.b64decode(cfg['plugins']['updater']['pubkey']))
+          d = json.load(open('dl/latest.json'))
+          open('dl/check.sig', 'wb').write(base64.b64decode(d['platforms']['linux-x86_64-appimage']['signature']))
+          EOF
+          minisign -V -p dl/pub.pub -m dl/*_amd64.AppImage -x dl/check.sig
