@@ -16,7 +16,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "preinstall": "npx only-allow pnpm"
+    "preinstall": "npx only-allow pnpm",
+    "local-build": "NO_STRIP=1 pnpm tauri build"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
