@@ -1,7 +1,7 @@
 {
   "name": "sonic-ripper",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "packageManager": "pnpm@12.3.4",
   "engines": {
@@ -16,7 +16,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "preinstall": "npx only-allow pnpm"
+    "preinstall": "npx only-allow pnpm",
+    "local-build": "NO_STRIP=1 pnpm tauri build"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

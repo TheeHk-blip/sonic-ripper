@@ -1149,6 +1149,8 @@ async fn prepare_cover(
     let mut args: Vec<String> = vec![
         "-y".into(),
         "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
         "-i".into(),
         cover.to_string_lossy().into_owned(),
         "-frames:v".into(),
@@ -1448,12 +1450,12 @@ async fn run_ffmpeg(
     let sidecar = app
         .shell()
         .sidecar("sonic-ffmpeg")
-        .map_err(|e| AppError::FfmpegFailed(format!("failed to resolve ffmpeg sidecar: {e}")))?;
+        .map_err(|e| AppError::FfmpegFailed(format!("Failed to resolve ffmpeg sidecar: {e}")))?;
 
     let (mut rx, child) = sidecar
         .args(args)
         .spawn()
-        .map_err(|e| AppError::FfmpegFailed(format!("failed to spawn ffmpeg sidecar: {e}")))?;
+        .map_err(|e| AppError::FfmpegFailed(format!("Failed to spawn ffmpeg sidecar: {e}")))?;
     registry.set_child(track_id, child);
 
     let mut stderr = String::new();

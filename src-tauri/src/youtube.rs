@@ -2192,6 +2192,7 @@ struct YtDlpFullEntry {
     release_date: Option<String>,
     album: Option<String>,
     artist: Option<String>,
+    artists: Option<Vec<String>>,
     track: Option<String>,
     thumbnail: Option<String>,
     thumbnails: Option<Vec<YtThumb>>,
@@ -2300,7 +2301,7 @@ pub async fn fetch_music_metadata(
         cover_url: pick_best_thumbnail(&entry.thumbnails, &entry.thumbnail),
         year: year_from_full_entry(&entry),
         album: entry.album.clone(),
-        album_artist: entry.artist.clone(),
+        album_artist: full_entry_artist(&entry),
     })
 }
 
@@ -2313,6 +2314,70 @@ fn year_from_full_entry(entry: &YtDlpFullEntry) -> Option<String> {
         .as_ref()
         .filter(|d| d.len() >= 4)
         .map(|d| d[..4].to_string())
+}
+
+fn full_entry_artist(info: &YtDlpFullEntry) -> Option<String> {
+    let list: Vec<&str> = info
+        .artists
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty())
+        .collect();
+    if !list.is_empty() {
+        return Some(list.join(", "));
+    }
+    info.artist
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+}
+
+static FEAT_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(
+        r"(?i)[\(\[]\s*(?:feat|ft|featuring)\.?\s+([^\)\]]+)[\)\]]|\b(?:feat|ft|featuring)\.?\s+(.+)$",
+    )
+    .unwrap()
+});
+
+static FEAT_SPLIT_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"(?i)\s*(?:,|&|\+|\band\b|\bx\b)\s*").unwrap());
+
+fn featured_from_title(title: &str) -> Vec<String> {
+    let Some(caps) = FEAT_RE.captures(title) else {
+        return Vec::new();
+    };
+    let raw = caps
+        .get(1)
+        .or_else(|| caps.get(2))
+        .map(|m| m.as_str())
+        .unwrap_or("");
+    FEAT_SPLIT_RE
+        .split(raw)
+        .map(|s| {
+            s.trim()
+                .trim_matches(|c| c == '.' || c == ')' || c == ']')
+                .trim()
+        })
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+// Appends featured artists named in `title` that `artist` doesn't already credit.
+fn merge_featured_artists(artist: &str, title: &str) -> String {
+    let mut out = artist.trim().to_string();
+    for name in featured_from_title(title) {
+        if !out.to_lowercase().contains(&name.to_lowercase()) {
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
+            out.push_str(&name);
+        }
+    }
+    out
 }
 
 const YOUTUBE_ENRICH_CONCURRENCY: usize = 6;
@@ -2342,13 +2407,7 @@ fn apply_album_metadata(tracks: &mut [Track], info: &YtDlpFullEntry, playlist_al
     } else {
         Some("Various Artists".to_string())
     };
-    let album_artist = shared_artist.or_else(|| {
-        info.artist
-            .as_deref()
-            .map(str::trim)
-            .filter(|a| !a.is_empty())
-            .map(str::to_string)
-    });
+    let album_artist = shared_artist.or_else(|| full_entry_artist(info));
 
     for track in tracks.iter_mut() {
         track.album = album.clone();
@@ -2399,16 +2458,13 @@ async fn enrich_tracks_with_youtube_metadata(
         );
     };
 
+    let mut album_applied = false;
     if let (Some(album_name), Some(first)) = (album_name, tracks.first()) {
         let (first_id, first_title) = (first.id.clone(), first.title.clone());
         if let Some(info) = fetch_full_video_info(app, &first_id, &first_title).await {
             apply_album_metadata(tracks, &info, album_name);
-            for done in 1..=listing_total {
-                emit_progress(done);
-            }
-            return;
+            album_applied = true;
         }
-        // The shared lookup failed: fall back to per-track lookups below.
     }
 
     let semaphore = Arc::new(Semaphore::new(YOUTUBE_ENRICH_CONCURRENCY));
@@ -2428,13 +2484,17 @@ async fn enrich_tracks_with_youtube_metadata(
     let mut enrich_completed: u32 = 0;
     for handle in handles {
         if let Ok((i, Some(info))) = handle.await {
+            logger::info(format!(
+              "[Enrich] \"{}\": artist={:?}, artists={:?}, uploader={:?}, current track.artist={:?}",
+              info.title.as_deref().unwrap_or("?"),
+              info.artist,
+              info.artists,
+              info.uploader,
+              tracks.get(i).map(|t| t.artist.as_str()),
+            ));
             if let Some(track) = tracks.get_mut(i) {
-                let info_artist = info
-                    .artist
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|a| !a.is_empty())
-                    .map(str::to_string);
+                let raw_title = track.title.clone();
+                let info_artist = full_entry_artist(&info);
                 let info_track = info
                     .track
                     .as_deref()
@@ -2442,34 +2502,36 @@ async fn enrich_tracks_with_youtube_metadata(
                     .filter(|t| !t.is_empty())
                     .map(str::to_string);
 
-                if track.year.is_empty() {
-                    if let Some(year) = year_from_full_entry(&info) {
-                        track.year = year;
+                if !album_applied {
+                    if track.year.is_empty() {
+                        if let Some(year) = year_from_full_entry(&info) {
+                            track.year = year;
+                        }
+                    }
+                    if let Some(album) = info
+                        .album
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|a| !a.is_empty())
+                    {
+                        track.album = album.to_string();
+                        if track.album_artist.is_none() {
+                            track.album_artist = info_artist.clone();
+                        }
+                    }
+                    if let Some(song) = info_track {
+                        track.title = song;
+                    }
+                    if let Some(cover) = pick_best_thumbnail(&info.thumbnails, &info.thumbnail) {
+                        track.cover_url = cover;
                     }
                 }
-                if let Some(album) = info
-                    .album
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|a| !a.is_empty())
-                {
-                    track.album = album.to_string();
-                    if track.album_artist.is_none() {
-                        track.album_artist = info_artist.clone();
-                    }
-                }
-                // YouTube Music's own catalogue entry beats the raw upload
-                // title / uploader name ("Song" by "Artist", not
-                // "Artist - Song (Official Video)" by "Artist - Topic").
-                if let Some(song) = info_track {
-                    track.title = song;
-                }
+
                 if let Some(artist) = info_artist {
                     track.artist = artist;
                 }
-                if let Some(cover) = pick_best_thumbnail(&info.thumbnails, &info.thumbnail) {
-                    track.cover_url = cover;
-                }
+                track.artist = merge_featured_artists(&track.artist, &raw_title);
+                track.artist = merge_featured_artists(&track.artist, &track.title);
             }
         }
 
@@ -2526,23 +2588,32 @@ fn entries_to_tracks(entries: Vec<YtDlpFlatEntry>, fallback_title: &str) -> Vec<
     matches
         .into_iter()
         .enumerate()
-        .map(|(i, m)| Track {
-            id: m.video_id.clone(),
-            title: m.title.unwrap_or_else(|| fallback_title.to_string()),
-            artist: m
+        .map(|(i, m)| {
+            let title = m.title.unwrap_or_else(|| fallback_title.to_string());
+            let base = m
                 .uploader
                 .as_deref()
                 .and_then(artist_from_uploader)
-                .unwrap_or_else(|| "Unknown Artist".to_string()),
-            album: String::new(),
-            album_artist: None,
-            year: String::new(),
-            track_number: (i as u32) + 1,
-            total_tracks: total,
-            duration: m.duration.unwrap_or(180),
-            cover_url: m.thumbnail.unwrap_or_else(|| FALLBACK_COVER.to_string()),
-            preview_url: Some(m.url),
-            not_found_on_youtube: false,
+                .unwrap_or_else(|| "Unknown Artist".to_string());
+            let artist = if base == "Unknown Artist" {
+                base
+            } else {
+                merge_featured_artists(&base, &title)
+            };
+            Track {
+                id: m.video_id.clone(),
+                title,
+                artist,
+                album: String::new(),
+                album_artist: None,
+                year: String::new(),
+                track_number: (i as u32) + 1,
+                total_tracks: total,
+                duration: m.duration.unwrap_or(180),
+                cover_url: m.thumbnail.unwrap_or_else(|| FALLBACK_COVER.to_string()),
+                preview_url: Some(m.url),
+                not_found_on_youtube: false,
+            }
         })
         .collect()
 }
