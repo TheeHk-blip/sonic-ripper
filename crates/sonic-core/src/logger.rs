@@ -1,11 +1,12 @@
 use once_cell::sync::OnceCell;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
 
-static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
+use crate::host::HostRef;
 
-pub fn init(app: AppHandle) {
-    let _ = APP_HANDLE.set(app);
+static HOST: OnceCell<HostRef> = OnceCell::new();
+
+pub fn init(host: HostRef) {
+    let _ = HOST.set(host);
 }
 
 #[derive(Clone, Serialize)]
@@ -18,9 +19,9 @@ pub struct LogLine {
 pub fn log(level: &str, msg: impl Into<String>) {
     let msg = msg.into();
     let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    println!("[{level}] {msg}");
-    if let Some(app) = APP_HANDLE.get() {
-        let _ = app.emit(
+    if let Some(host) = HOST.get() {
+        crate::host::emit(
+            host,
             "app-log",
             LogLine {
                 level: level.to_string(),

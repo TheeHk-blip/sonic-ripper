@@ -1,12 +1,12 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use tauri_plugin_shell::process::CommandChild;
 use tokio_util::sync::CancellationToken;
 
-// Tracks in-flight track downloads so the frontend can cancel a single
-// track or a whole batch. Registered as Tauri managed state and shared
-// by every command in the app.
+use crate::host::ProcessChild;
+
+// Tracks in-flight downloads so either frontend can cancel a single track or
+// a whole batch. Owned by the Host, shared by every download command.
 #[derive(Default)]
 pub struct DownloadRegistry {
     inner: Mutex<Inner>,
@@ -15,7 +15,7 @@ pub struct DownloadRegistry {
 #[derive(Default)]
 struct Inner {
     tokens: HashMap<String, CancellationToken>,
-    children: HashMap<String, CommandChild>,
+    children: HashMap<String, Arc<dyn ProcessChild>>,
 }
 
 impl DownloadRegistry {
@@ -35,7 +35,7 @@ impl DownloadRegistry {
         inner.children.remove(track_id);
     }
 
-    pub fn set_child(&self, track_id: &str, child: CommandChild) {
+    pub fn set_child(&self, track_id: &str, child: Arc<dyn ProcessChild>) {
         self.inner
             .lock()
             .unwrap()
@@ -60,15 +60,3 @@ impl DownloadRegistry {
     }
 }
 
-#[tauri::command]
-pub fn cancel_download(registry: tauri::State<'_, DownloadRegistry>, track_id: String) -> bool {
-    registry.cancel_track(&track_id)
-}
-
-#[tauri::command]
-pub fn cancel_batch(registry: tauri::State<'_, DownloadRegistry>, track_ids: Vec<String>) -> u32 {
-    track_ids
-        .iter()
-        .filter(|id| registry.cancel_track(id))
-        .count() as u32
-}

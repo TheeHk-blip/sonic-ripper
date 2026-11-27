@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { queueReleaseNotes } from '../lib/releaseNotes';
 
 export function UpdateBanner() {
   const [update, setUpdate] = useState<Update | null>(null);
@@ -28,6 +29,8 @@ export function UpdateBanner() {
   };
 
   const installUpdate = async () => {
+    queueReleaseNotes(update.version, update.body);
+
     try {
       let downloaded = 0;
       let total = 0;

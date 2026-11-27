@@ -189,10 +189,71 @@ jobs:
           echo "Re-uploading repackaged AppImage and signature to release ${{ github.ref_name }}"
           gh release upload "${{ github.ref_name }}" "$APPIMAGE_PATH" "$APPIMAGE_PATH.sig" --repo ${{ github.repository }} --clobber
 
+  build-cli:
+    needs: build-desktop
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'ubuntu-22.04'
+            rust-target: 'x86_64-unknown-linux-gnu'
+            ext: ''
+          - platform: 'ubuntu-22.04'
+            rust-target: 'aarch64-unknown-linux-gnu'
+            ext: ''
+          - platform: 'windows-latest'
+            rust-target: 'x86_64-pc-windows-msvc'
+            ext: '.exe'
+          - platform: 'macos-latest'
+            rust-target: 'x86_64-apple-darwin'
+            ext: ''
+          - platform: 'macos-latest'
+            rust-target: 'aarch64-apple-darwin'
+            ext: ''
+    runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.rust-target }}
+          cache: true
+
+      - name: Install aarch64 Linux cross linker
+        if: matrix.rust-target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build CLI
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release -p sonic-cli --target ${{ matrix.rust-target }}
+
+      - name: Prepare asset
+        shell: bash
+        run: |
+          src="target/${{ matrix.rust-target }}/release/sonic-cli${{ matrix.ext }}"
+          asset="sonic-cli-${{ matrix.rust-target }}${{ matrix.ext }}"
+          test -f "$src"
+          cp "$src" "$asset"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Upload CLI asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "$ASSET" --repo "${{ github.repository }}" --clobber
+
   # Runs once after every matrix job has finished, so it can't race with
   # tauri-action's own edits to latest.json.
   finalize-release:
-    needs: build-desktop
+    needs: [build-desktop, build-cli]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

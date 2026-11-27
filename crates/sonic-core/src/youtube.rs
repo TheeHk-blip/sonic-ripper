@@ -1,17 +1,19 @@
+use directories::ProjectDirs;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
-use tauri_plugin_shell::process::CommandEvent;
-use tauri_plugin_shell::ShellExt;
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::Semaphore;
 use url::Url;
 
+use crate::analyze::AnalyzeProgress;
+use crate::host::{emit, HostRef, ProcessEvent};
 use crate::logger;
 use crate::models::{ScrapedTrackItem, Track};
-use crate::AnalyzeProgress;
 
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 const DIRECT_SEARCH_LIMIT: u32 = 10;
@@ -92,6 +94,18 @@ fn cookie_args() -> Vec<String> {
         args.push(browser.clone());
     }
     args
+}
+
+// Metadata lookups must use the same bundled Deno sidecar as downloads, not
+// whatever runtime happens to be first on PATH.
+fn js_runtime_args(app: &HostRef) -> Vec<String> {
+    match app.resolve_binary("sonic-deno") {
+        Some(path) => vec![
+            "--js-runtimes".to_string(),
+            format!("deno:{}", path.to_string_lossy()),
+        ],
+        None => Vec::new(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -230,20 +244,12 @@ fn extract_youtube_id(input: &str) -> Option<String> {
 }
 
 async fn run_yt_dlp_search(
-    app: &AppHandle,
+    app: &HostRef,
     engine: &str,
     query: &str,
     limit: u32,
 ) -> Vec<YtDlpFlatEntry> {
     let search_spec = format!("{engine}{limit}:{query}");
-
-    let sidecar = match app.shell().sidecar("sonic-yt-dlp") {
-        Ok(cmd) => cmd,
-        Err(e) => {
-            logger::warn(format!("[YouTube] failed to resolve yt-dlp sidecar: {e}"));
-            return Vec::new();
-        }
-    };
 
     let mut args = vec![
         "--flat-playlist".to_string(),
@@ -253,9 +259,7 @@ async fn run_yt_dlp_search(
     args.extend(cookie_args());
     args.push(search_spec);
 
-    let output = sidecar.args(args).output().await;
-
-    let output = match output {
+    let output = match app.run_output("sonic-yt-dlp", args).await {
         Ok(o) => o,
         Err(e) => {
             logger::warn(format!("[YouTube] Failed to spawn yt-dlp sidecar: {e}"));
@@ -263,7 +267,7 @@ async fn run_yt_dlp_search(
         }
     };
 
-    if !output.status.success() {
+    if !output.success {
         logger::warn(format!(
             "[YouTube] yt-dlp search exited non-zero for \"{query}\": {}",
             String::from_utf8_lossy(&output.stderr)
@@ -276,15 +280,7 @@ async fn run_yt_dlp_search(
         .collect()
 }
 
-async fn run_yt_dlp_music_search(app: &AppHandle, query: &str, limit: u32) -> Vec<YtDlpFlatEntry> {
-    let sidecar = match app.shell().sidecar("sonic-yt-dlp") {
-        Ok(cmd) => cmd,
-        Err(e) => {
-            logger::warn(format!("[YouTube] Failed to resolve yt-dlp sidecar: {e}"));
-            return Vec::new();
-        }
-    };
-
+async fn run_yt_dlp_music_search(app: &HostRef, query: &str, limit: u32) -> Vec<YtDlpFlatEntry> {
     let mut search_url = Url::parse("https://music.youtube.com/search")
         .expect("static YouTube Music search URL is always valid");
     search_url.query_pairs_mut().append_pair("q", query);
@@ -300,9 +296,7 @@ async fn run_yt_dlp_music_search(app: &AppHandle, query: &str, limit: u32) -> Ve
     args.extend(cookie_args());
     args.push(search_url);
 
-    let output = sidecar.args(args).output().await;
-
-    let output = match output {
+    let output = match app.run_output("sonic-yt-dlp", args).await {
         Ok(o) => o,
         Err(e) => {
             logger::warn(format!("[YouTube] Failed to spawn yt-dlp sidecar: {e}"));
@@ -310,7 +304,7 @@ async fn run_yt_dlp_music_search(app: &AppHandle, query: &str, limit: u32) -> Ve
         }
     };
 
-    if !output.status.success() {
+    if !output.success {
         logger::warn(format!(
             "[YouTube] yt-dlp music search exited non-zero for \"{query}\": {}",
             String::from_utf8_lossy(&output.stderr)
@@ -323,15 +317,7 @@ async fn run_yt_dlp_music_search(app: &AppHandle, query: &str, limit: u32) -> Ve
         .collect()
 }
 
-async fn run_yt_dlp_direct(app: &AppHandle, video_url: &str) -> Vec<YtDlpFlatEntry> {
-    let sidecar = match app.shell().sidecar("sonic-yt-dlp") {
-        Ok(cmd) => cmd,
-        Err(e) => {
-            logger::warn(format!("[YouTube] Failed to resolve yt-dlp sidecar: {e}"));
-            return Vec::new();
-        }
-    };
-
+async fn run_yt_dlp_direct(app: &HostRef, video_url: &str) -> Vec<YtDlpFlatEntry> {
     let mut args = vec![
         "--flat-playlist".to_string(),
         "--dump-json".to_string(),
@@ -340,9 +326,7 @@ async fn run_yt_dlp_direct(app: &AppHandle, video_url: &str) -> Vec<YtDlpFlatEnt
     args.extend(cookie_args());
     args.push(video_url.to_string());
 
-    let output = sidecar.args(args).output().await;
-
-    let output = match output {
+    let output = match app.run_output("sonic-yt-dlp", args).await {
         Ok(o) => o,
         Err(e) => {
             logger::warn(format!("[YouTube] Failed to spawn yt-dlp sidecar: {e}"));
@@ -350,7 +334,7 @@ async fn run_yt_dlp_direct(app: &AppHandle, video_url: &str) -> Vec<YtDlpFlatEnt
         }
     };
 
-    if !output.status.success() {
+    if !output.success {
         logger::warn(format!(
             "[YouTube] yt-dlp direct resolve exited non-zero for \"{video_url}\": {}",
             String::from_utf8_lossy(&output.stderr)
@@ -364,19 +348,11 @@ async fn run_yt_dlp_direct(app: &AppHandle, video_url: &str) -> Vec<YtDlpFlatEnt
 }
 
 async fn run_yt_dlp_streaming(
-    app: &AppHandle,
+    app: &HostRef,
     mut args: Vec<String>,
     fallback_total: Option<u32>,
     has_second_phase: bool,
 ) -> Vec<YtDlpFlatEntry> {
-    let sidecar = match app.shell().sidecar("sonic-yt-dlp") {
-        Ok(cmd) => cmd,
-        Err(e) => {
-            logger::warn(format!("[YouTube] Failed to resolve yt-dlp sidecar: {e}"));
-            return Vec::new();
-        }
-    };
-
     // Cookies inserted here (rather than by each caller) so both
     // `run_yt_dlp_search_streaming` and `run_yt_dlp_direct_streaming` get
     // them for free. Inserted before the trailing search-spec/URL
@@ -387,13 +363,15 @@ async fn run_yt_dlp_streaming(
         args.insert(insert_at + offset, arg);
     }
 
-    let (mut rx, _child) = match sidecar.args(args).spawn() {
-        Ok(pair) => pair,
+    let process = match app.spawn_stream("sonic-yt-dlp", args) {
+        Ok(p) => p,
         Err(e) => {
             logger::warn(format!("[YouTube] Failed to spawn yt-dlp sidecar: {e}"));
             return Vec::new();
         }
     };
+    let mut rx = process.events;
+    let _child = process.child;
 
     let mut entries: Vec<YtDlpFlatEntry> = Vec::new();
     let mut total = fallback_total;
@@ -402,7 +380,7 @@ async fn run_yt_dlp_streaming(
 
     while let Some(event) = rx.recv().await {
         match event {
-            CommandEvent::Stdout(bytes) => {
+            ProcessEvent::Stdout(bytes) => {
                 let line = String::from_utf8_lossy(&bytes);
                 let line = line.trim();
                 if line.is_empty() {
@@ -415,7 +393,8 @@ async fn run_yt_dlp_streaming(
                     entries.push(entry);
                     let completed = entries.len() as u32;
                     let display_total = total.unwrap_or(completed).max(completed);
-                    let _ = app.emit(
+                    emit(
+                        app,
                         "analyze-progress",
                         AnalyzeProgress {
                             completed,
@@ -424,22 +403,20 @@ async fn run_yt_dlp_streaming(
                     );
                 }
             }
-            CommandEvent::Stderr(bytes) => {
+            ProcessEvent::Stderr(bytes) => {
                 stderr_buf.push_str(&String::from_utf8_lossy(&bytes));
             }
-            CommandEvent::Error(e) => {
+            ProcessEvent::Error(e) => {
                 logger::warn(format!("[YouTube] yt-dlp process error: {e}"));
             }
-            CommandEvent::Terminated(payload) => {
-                if payload.code != Some(0) {
+            ProcessEvent::Terminated(code) => {
+                if code != Some(0) {
                     logger::warn(format!(
-                        "[YouTube] yt-dlp exited with code {:?}: {stderr_buf}",
-                        payload.code
+                        "[YouTube] yt-dlp exited with code {code:?}: {stderr_buf}"
                     ));
                 }
                 break;
             }
-            _ => {}
         }
     }
 
@@ -447,7 +424,7 @@ async fn run_yt_dlp_streaming(
 }
 
 async fn run_yt_dlp_search_streaming(
-    app: &AppHandle,
+    app: &HostRef,
     query: &str,
     limit: u32,
 ) -> Vec<YtDlpFlatEntry> {
@@ -466,7 +443,7 @@ async fn run_yt_dlp_search_streaming(
     .await
 }
 
-async fn run_yt_dlp_direct_streaming(app: &AppHandle, video_url: &str) -> Vec<YtDlpFlatEntry> {
+async fn run_yt_dlp_direct_streaming(app: &HostRef, video_url: &str) -> Vec<YtDlpFlatEntry> {
     run_yt_dlp_streaming(
         app,
         vec![
@@ -482,7 +459,7 @@ async fn run_yt_dlp_direct_streaming(app: &AppHandle, video_url: &str) -> Vec<Yt
 }
 
 // Fetch up to `limit` YouTube matches for a free-text query.
-async fn search_youtube_many(app: &AppHandle, query: &str, limit: u32) -> Vec<YoutubeMatch> {
+async fn search_youtube_many(app: &HostRef, query: &str, limit: u32) -> Vec<YoutubeMatch> {
     run_yt_dlp_search(app, "ytsearch", query, limit)
         .await
         .into_iter()
@@ -491,7 +468,7 @@ async fn search_youtube_many(app: &AppHandle, query: &str, limit: u32) -> Vec<Yo
 }
 
 // Single best match (cached). Used by Spotify track enrichment.
-async fn search_youtube_raw(app: &AppHandle, query: &str) -> Option<YoutubeMatch> {
+async fn search_youtube_raw(app: &HostRef, query: &str) -> Option<YoutubeMatch> {
     let cache_key = query.trim().to_lowercase();
 
     {
@@ -516,7 +493,7 @@ async fn search_youtube_raw(app: &AppHandle, query: &str) -> Option<YoutubeMatch
     matched
 }
 
-pub async fn search_youtube(app: &AppHandle, title: &str, artist: &str) -> Option<YoutubeMatch> {
+pub async fn search_youtube(app: &HostRef, title: &str, artist: &str) -> Option<YoutubeMatch> {
     search_youtube_raw(app, &format!("{title} {artist}")).await
 }
 
@@ -1735,7 +1712,7 @@ struct ScoredMatch {
 }
 
 async fn best_scored_match(
-    app: &AppHandle,
+    app: &HostRef,
     candidates: Vec<YoutubeMatch>,
     title: &str,
     artist: &str,
@@ -1945,7 +1922,7 @@ async fn best_scored_match(
 const MUSIC_SEARCH_CANDIDATES: u32 = 50;
 
 async fn find_youtube_music_match(
-    app: &AppHandle,
+    app: &HostRef,
     title: &str,
     artist: &str,
     expected_duration: Option<u32>,
@@ -2011,7 +1988,7 @@ const OFFICIAL_QUERY_SUFFIXES: &[&str] = &["official audio", "official video"];
 // for a real shot at landing on the actual official upload instead of
 // whatever a single bare query happened to rank first.
 async fn search_youtube_official_first(
-    app: &AppHandle,
+    app: &HostRef,
     title: &str,
     artist: &str,
     expected_duration: Option<u32>,
@@ -2102,7 +2079,7 @@ fn plain_corroborates(
 // discards a different part/volume of the release, and merely ranks any other
 // mismatch lower.
 pub async fn find_validated_audio_match(
-    app: &AppHandle,
+    app: &HostRef,
     title: &str,
     artist: &str,
     expected_duration: Option<u32>,
@@ -2199,6 +2176,8 @@ struct YtDlpFullEntry {
     duration: Option<f64>,
     title: Option<String>,
     uploader: Option<String>,
+    channel: Option<String>,
+    description: Option<String>,
 }
 
 // Every full lookup is a separate yt-dlp process (~12 s in practice), so they
@@ -2213,8 +2192,128 @@ const INFO_CACHE_MAX_ENTRIES: usize = 1024;
 static INFO_LOOKUP_PERMITS: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(INFO_LOOKUP_CONCURRENCY));
 static INFO_CACHE: Lazy<Mutex<HashMap<String, String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+// The launcher runs one CLI process per album/single, so the HashMap above
+// only helps inside a single process. A small shared on-disk cache lets later
+// processes reuse the same raw yt-dlp entries instead of paying ~12 s again.
+const INFO_DISK_CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+
+fn info_cache_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("SONIC_INFO_CACHE_DIR") {
+        if !dir.trim().is_empty() {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    ProjectDirs::from("", "", "Sonic Ripper")
+        .map(|dirs| dirs.cache_dir().join("yt-info"))
+}
+
+// The launcher gives each run a private TMPDIR, so `cookie_args()` contains a
+// different cookie *path* every time. Hashing every byte is also too strict:
+// yt-dlp rewrites SIDCC/VISITOR_* tokens and their expiries on each run even
+// though the account is unchanged. Fingerprint the stable auth cookies only.
+const VOLATILE_COOKIE_NAMES: &[&str] = &[
+    "SIDCC",
+    "__Secure-1PSIDCC",
+    "__Secure-3PSIDCC",
+    "VISITOR_INFO1_LIVE",
+    "VISITOR_PRIVACY_METADATA",
+];
+
+fn hash_cookie_identity<H: Hasher>(hasher: &mut H) {
+    let state = YOUTUBE_COOKIES.lock().unwrap();
+    if let Some(path) = &state.cookies_path {
+        "file".hash(hasher);
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                let mut stable: Vec<(String, String, String)> = text
+                    .lines()
+                    .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+                    .filter_map(|line| {
+                        let fields: Vec<&str> = line.split('\t').collect();
+                        if fields.len() < 7 {
+                            return None;
+                        }
+                        let name = fields[5].trim();
+                        if VOLATILE_COOKIE_NAMES.contains(&name) {
+                            return None;
+                        }
+                        Some((
+                            fields[0].trim().to_string(),
+                            name.to_string(),
+                            fields[6].trim().to_string(),
+                        ))
+                    })
+                    .collect();
+                if stable.is_empty() {
+                    bytes.hash(hasher);
+                } else {
+                    stable.sort();
+                    stable.hash(hasher);
+                }
+            }
+            // Unreadable cookie file: fall back to its path so the cache is
+            // invalidated rather than silently reused with unknown cookies.
+            Err(_) => path.hash(hasher),
+        }
+    } else if let Some(browser) = &state.cookies_from_browser {
+        "browser".hash(hasher);
+        browser.hash(hasher);
+    } else {
+        "none".hash(hasher);
+    }
+}
+
+fn info_cache_key(app: &HostRef, video_id: &str) -> Option<PathBuf> {
+    let dir = info_cache_dir()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    // Cookies and the JS runtime change which metadata yt-dlp can extract.
+    hash_cookie_identity(&mut hasher);
+    js_runtime_args(app).hash(&mut hasher);
+    let safe_id: String = video_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    Some(dir.join(format!("{}-{:.016x}.json", safe_id, hasher.finish())))
+}
+
+fn read_info_disk_cache(app: &HostRef, video_id: &str) -> Option<String> {
+    let path = info_cache_key(app, video_id)?;
+    let metadata = std::fs::metadata(&path).ok()?;
+    let age = SystemTime::now().duration_since(metadata.modified().ok()?).ok()?;
+    if age > INFO_DISK_CACHE_TTL {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+fn write_info_disk_cache(app: &HostRef, video_id: &str, raw: &str) {
+    let Some(path) = info_cache_key(app, video_id) else { return };
+    let Some(dir) = path.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    // Several CLI processes may finish the same track at once; write to a
+    // private file and rename so no reader ever sees a partial entry.
+    let stamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp = dir.join(format!(
+        ".cache-{}-{}-{}.tmp",
+        std::process::id(),
+        stamp,
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("entry")
+    ));
+    if std::fs::write(&temp, raw).is_ok() {
+        let _ = std::fs::rename(&temp, &path);
+    } else {
+        let _ = std::fs::remove_file(&temp);
+    }
+}
+
 async fn fetch_full_video_info(
-    app: &AppHandle,
+    app: &HostRef,
     video_id: &str,
     label: &str,
 ) -> Option<YtDlpFullEntry> {
@@ -2222,28 +2321,39 @@ async fn fetch_full_video_info(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(video_id)
-        .cloned();
-    if let Some(entry) = cached.and_then(|raw| serde_json::from_str::<YtDlpFullEntry>(&raw).ok()) {
-        logger::info(format!(
-            "[YouTube] Found track \"{label}\" ({video_id}) (cached lookup)"
-        ));
-        return Some(entry);
+        .cloned()
+        .or_else(|| read_info_disk_cache(app, video_id));
+    if let Some(raw) = cached {
+        if let Ok(entry) = serde_json::from_str::<YtDlpFullEntry>(&raw) {
+            INFO_CACHE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(video_id.to_string(), raw);
+            logger::info(format!(
+                "[YouTube] Found track \"{label}\" ({video_id}) (cached lookup)"
+            ));
+            return Some(entry);
+        }
     }
 
     let _permit = INFO_LOOKUP_PERMITS.acquire().await.ok();
-    let sidecar = app.shell().sidecar("sonic-yt-dlp").ok()?;
     let url = format!("https://www.youtube.com/watch?v={video_id}");
     let mut args = vec![
         "--dump-json".to_string(),
         "--no-warnings".to_string(),
+        // The batch downloader uses web_music; the old web,android lookup
+        // returns only storyboards for current player builds and fills the log
+        // with EJS challenge failures. Keep metadata lookups on the same
+        // client so enrichment cannot stall a download.
         "--extractor-args".to_string(),
-        "youtube:player_client=web,android".to_string(),
+        "youtube:player_client=web_music".to_string(),
     ];
+    args.extend(js_runtime_args(app));
     args.extend(cookie_args());
     args.push(url);
 
-    let output = sidecar.args(args).output().await.ok()?;
-    if !output.status.success() {
+    let output = app.run_output("sonic-yt-dlp", args).await.ok()?;
+    if !output.success {
         logger::warn(format!(
             "[YouTube] Fetching full video info failed for \"{label}\" ({video_id}): {}",
             String::from_utf8_lossy(&output.stderr)
@@ -2264,7 +2374,8 @@ async fn fetch_full_video_info(
         if cache.len() >= INFO_CACHE_MAX_ENTRIES {
             cache.clear();
         }
-        cache.insert(video_id.to_string(), raw);
+        cache.insert(video_id.to_string(), raw.clone());
+        write_info_disk_cache(app, video_id, &raw);
         entry
     });
 
@@ -2292,7 +2403,7 @@ pub struct MusicMetadata {
 }
 
 pub async fn fetch_music_metadata(
-    app: &AppHandle,
+    app: &HostRef,
     video_id: &str,
     title: &str,
 ) -> Option<MusicMetadata> {
@@ -2380,6 +2491,138 @@ fn merge_featured_artists(artist: &str, title: &str) -> String {
     out
 }
 
+static LEGAL_CREDIT_RE: Lazy<Regex> = Lazy::new(|| {
+    regex::Regex::new(r"^\s*[A-Za-z]\.\s+[A-Za-z][A-Za-z'’\-]*(?:\s+[A-Za-z][A-Za-z'’\-]*)*\s*$")
+        .unwrap()
+});
+static ROLE_LEAD_RE: Lazy<Regex> = Lazy::new(|| {
+    regex::Regex::new(
+        r"(?i)^\s*(?:producer|writer|written by|composer|mixer|mixed by|engineer|mastering|remixer|arranger|programming|host|narrator|dj)\b",
+    )
+    .unwrap()
+});
+static ROLE_TAIL_RE: Lazy<Regex> = Lazy::new(|| {
+    regex::Regex::new(
+        r"(?i)\b(?:producer|writer|composer|mixer|engineer|remixer|arranger|programming)\s*$",
+    )
+    .unwrap()
+});
+
+fn push_unique_credit(out: &mut Vec<String>, name: String) {
+    let name = name.trim().to_string();
+    if !name.is_empty() && !out.iter().any(|v| v.eq_ignore_ascii_case(&name)) {
+        out.push(name);
+    }
+}
+
+fn description_role_names(info: &YtDlpFullEntry) -> Vec<String> {
+    const PREFIXES: &[&str] = &[
+        "producer:", "writers:", "writer:", "written by:", "composer:",
+        "mixer:", "mixed by:", "engineer:", "mastering:", "remixer:",
+        "arranger:", "programming:", "dj:",
+    ];
+    let Some(description) = info.description.as_deref() else {
+        return Vec::new();
+    };
+    description
+        .lines()
+        .filter_map(|line| {
+            let lower = line.trim().to_ascii_lowercase();
+            PREFIXES.iter().find_map(|prefix| {
+                lower
+                    .strip_prefix(prefix)
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty())
+            })
+        })
+        .collect()
+}
+
+fn initials_match_credit(short: &str, full: &str) -> bool {
+    if !LEGAL_CREDIT_RE.is_match(short) {
+        return false;
+    }
+    let short = short.trim();
+    let initial = short.chars().next().unwrap_or(' ').to_ascii_lowercase();
+    let surname = short
+        .split_whitespace()
+        .last()
+        .unwrap_or("")
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let full = full.trim().to_ascii_lowercase();
+    surname.len() > 1 && full.starts_with(initial) && full.ends_with(&surname)
+}
+
+fn is_non_performer_credit(name: &str, role_names: &[String]) -> bool {
+    let name = name.trim();
+    if ROLE_LEAD_RE.is_match(name) || ROLE_TAIL_RE.is_match(name) {
+        return true;
+    }
+    if LEGAL_CREDIT_RE.is_match(name) {
+        return true;
+    }
+    role_names.iter().any(|role| {
+        role.eq_ignore_ascii_case(name) || initials_match_credit(name, role)
+    })
+}
+
+// YTM's `artists` list can include writers alongside performers (for example
+// "Drake, Central Cee, A. Graham, ..."). Keep only real performance credits:
+// exact YTM artist names, plus the channel/hint/featured names that must never
+// be filtered out. Legal-name-style credits and description role lines are
+// writers/producers and are dropped.
+fn performer_credits(info: &YtDlpFullEntry, hints: &[String], title: &str) -> String {
+    let raw: Vec<&str> = info
+        .artists
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let raw = if raw.is_empty() {
+        info.artist
+            .as_deref()
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        raw
+    };
+
+    let role_names = description_role_names(info);
+    let mut protected: Vec<String> = Vec::new();
+    for hint in hints {
+        push_unique_credit(&mut protected, hint.clone());
+    }
+    for name in [info.channel.as_deref(), info.uploader.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(artist_from_uploader)
+    {
+        push_unique_credit(&mut protected, name);
+    }
+    for name in featured_from_title(title) {
+        push_unique_credit(&mut protected, name);
+    }
+
+    let mut kept: Vec<String> = Vec::new();
+    for name in raw {
+        if protected.iter().any(|p| p.eq_ignore_ascii_case(name)) {
+            push_unique_credit(&mut kept, name.to_string());
+        } else if !is_non_performer_credit(name, &role_names) {
+            push_unique_credit(&mut kept, name.to_string());
+        }
+    }
+    for name in protected {
+        push_unique_credit(&mut kept, name);
+    }
+    kept.join(", ")
+}
+
 const YOUTUBE_ENRICH_CONCURRENCY: usize = 6;
 
 // Applies one video's album-level data to every track of an album playlist.
@@ -2442,14 +2685,16 @@ fn apply_album_metadata(tracks: &mut [Track], info: &YtDlpFullEntry, playlist_al
 // `run_yt_dlp_streaming`'s `has_second_phase`): listing filled 0–N, this fills N–2N,
 // so the bar keeps moving smoothly instead of freezing at "N of N" while this runs.
 async fn enrich_tracks_with_youtube_metadata(
-    app: &AppHandle,
+    app: &HostRef,
     tracks: &mut [Track],
     album_name: Option<&str>,
+    hints: &[String],
 ) {
     let listing_total = tracks.len() as u32;
     let overall_total = (listing_total * 2).max(1);
     let emit_progress = |done: u32| {
-        let _ = app.emit(
+        emit(
+            app,
             "analyze-progress",
             AnalyzeProgress {
                 completed: listing_total + done,
@@ -2495,6 +2740,7 @@ async fn enrich_tracks_with_youtube_metadata(
             if let Some(track) = tracks.get_mut(i) {
                 let raw_title = track.title.clone();
                 let info_artist = full_entry_artist(&info);
+                let info_performers = performer_credits(&info, hints, &raw_title);
                 let info_track = info
                     .track
                     .as_deref()
@@ -2527,8 +2773,8 @@ async fn enrich_tracks_with_youtube_metadata(
                     }
                 }
 
-                if let Some(artist) = info_artist {
-                    track.artist = artist;
+                if !info_performers.is_empty() {
+                    track.artist = info_performers;
                 }
                 track.artist = merge_featured_artists(&track.artist, &raw_title);
                 track.artist = merge_featured_artists(&track.artist, &track.title);
@@ -2619,23 +2865,45 @@ fn entries_to_tracks(entries: Vec<YtDlpFlatEntry>, fallback_title: &str) -> Vec<
 }
 
 // Multi-result direct search. Returns up to `DIRECT_SEARCH_LIMIT` tracks.
-pub async fn direct_search_tracks(app: &AppHandle, query: &str) -> Vec<Track> {
+pub async fn direct_search_tracks(app: &HostRef, query: &str) -> Vec<Track> {
     let entries = run_yt_dlp_search_streaming(app, query, DIRECT_SEARCH_LIMIT).await;
     entries_to_tracks(entries, query)
 }
 
-pub async fn resolve_youtube_url(app: &AppHandle, url: &str) -> Vec<Track> {
+pub async fn resolve_youtube_url(app: &HostRef, url: &str, hints: &[String]) -> Vec<Track> {
     let Some(video_id) = extract_youtube_id(url) else {
         return Vec::new();
     };
     let canonical = format!("https://www.youtube.com/watch?v={video_id}");
     let entries = run_yt_dlp_direct(app, &canonical).await;
     let mut tracks = entries_to_tracks(entries, url);
-    enrich_tracks_with_youtube_metadata(app, &mut tracks, None).await;
+    enrich_tracks_with_youtube_metadata(app, &mut tracks, None, hints).await;
     tracks
 }
 
-pub async fn resolve_youtube_playlist(app: &AppHandle, url: &str) -> (String, bool, Vec<Track>) {
+fn drop_excluded_tracks(tracks: Vec<Track>, excluded_ids: &[String]) -> Vec<Track> {
+    if excluded_ids.is_empty() {
+        return tracks;
+    }
+    let excluded: HashSet<String> = excluded_ids.iter().cloned().collect();
+    let mut kept: Vec<Track> = tracks
+        .into_iter()
+        .filter(|track| !excluded.contains(&track.id))
+        .collect();
+    let total = kept.len() as u32;
+    for (position, track) in kept.iter_mut().enumerate() {
+        track.track_number = position as u32 + 1;
+        track.total_tracks = total;
+    }
+    kept
+}
+
+pub async fn resolve_youtube_playlist(
+    app: &HostRef,
+    url: &str,
+    hints: &[String],
+    excluded_ids: &[String],
+) -> (String, bool, Vec<Track>) {
     let Some(playlist_id) = extract_youtube_playlist_id(url) else {
         return (url.to_string(), false, Vec::new());
     };
@@ -2653,15 +2921,18 @@ pub async fn resolve_youtube_playlist(app: &AppHandle, url: &str) -> (String, bo
         .map(str::to_string)
         .unwrap_or(raw_title);
 
-    let mut tracks = entries_to_tracks(entries, &playlist_name);
+    let tracks = entries_to_tracks(entries, &playlist_name);
+    // Filter before metadata enrichment so duplicate album tracks never get a
+    // lookup, let alone a download.
+    let mut tracks = drop_excluded_tracks(tracks, excluded_ids);
     // An album playlist shares album/year/cover across tracks: one lookup, not N.
     let album_name = is_album.then_some(playlist_name.as_str());
-    enrich_tracks_with_youtube_metadata(app, &mut tracks, album_name).await;
+    enrich_tracks_with_youtube_metadata(app, &mut tracks, album_name, hints).await;
     (playlist_name, is_album, tracks)
 }
 
 pub async fn enrich_track(
-    app: &AppHandle,
+    app: &HostRef,
     item: &ScrapedTrackItem,
     id: String,
     track_number: u32,
@@ -2707,5 +2978,193 @@ pub async fn enrich_track(
             preview_url: None,
             not_found_on_youtube: true,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::{BoxFuture, Host};
+
+    static INFO_CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct TestHost;
+
+    impl Host for TestHost {
+        fn data_dir(&self) -> PathBuf {
+            PathBuf::new()
+        }
+        fn app_version(&self) -> String {
+            "test".to_string()
+        }
+        fn emit(&self, _event: &str, _payload: serde_json::Value) {}
+        fn registry(&self) -> Arc<crate::cancel::DownloadRegistry> {
+            Arc::new(crate::cancel::DownloadRegistry::default())
+        }
+        fn run_output(
+            &self,
+            _name: &str,
+            _args: Vec<String>,
+        ) -> BoxFuture<'_, std::io::Result<crate::host::ProcessOutput>> {
+            Box::pin(async { Err(std::io::Error::other("not used")) })
+        }
+        fn spawn_stream(
+            &self,
+            _name: &str,
+            _args: Vec<String>,
+        ) -> std::io::Result<crate::host::SpawnedProcess> {
+            Err(std::io::Error::other("not used"))
+        }
+        fn resolve_binary(&self, _name: &str) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    #[test]
+    fn full_info_disk_cache_is_shared_between_readers() {
+        let _guard = INFO_CACHE_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().expect("temp cache dir");
+        std::env::set_var("SONIC_INFO_CACHE_DIR", dir.path());
+        let host: HostRef = Arc::new(TestHost);
+        let raw = r#"{"id":"abc","title":"Track"}"#;
+        write_info_disk_cache(&host, "abc", raw);
+        assert_eq!(read_info_disk_cache(&host, "abc").as_deref(), Some(raw));
+        assert_eq!(read_info_disk_cache(&host, "other"), None);
+        std::env::remove_var("SONIC_INFO_CACHE_DIR");
+    }
+
+    #[test]
+    fn info_cache_key_ignores_volatile_cookie_rotation() {
+        let _guard = INFO_CACHE_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().expect("temp cookie dir");
+        let stable = ".youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\tabc\n";
+        let first_path = dir.path().join("first.txt");
+        let second_path = dir.path().join("second.txt");
+        let account_path = dir.path().join("account.txt");
+        std::fs::write(
+            &first_path,
+            format!("{stable}.youtube.com\tTRUE\t/\tFALSE\t100\tSIDCC\told\n"),
+        )
+        .expect("write first cookies");
+        std::fs::write(
+            &second_path,
+            format!("{stable}.youtube.com\tTRUE\t/\tFALSE\t200\tSIDCC\tnew\n"),
+        )
+        .expect("write second cookies");
+        std::fs::write(
+            &account_path,
+            format!(".youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\txyz\n"),
+        )
+        .expect("write different account cookies");
+        let host: HostRef = Arc::new(TestHost);
+
+        let key_for = |path: &std::path::Path| {
+            YOUTUBE_COOKIES.lock().unwrap().cookies_path =
+                Some(path.to_string_lossy().into_owned());
+            info_cache_key(&host, "abc").expect("cache key")
+        };
+        let first = key_for(&first_path);
+        let second = key_for(&second_path);
+        let other_account = key_for(&account_path);
+        YOUTUBE_COOKIES.lock().unwrap().cookies_path = None;
+
+        assert_eq!(first, second);
+        assert_ne!(first, other_account);
+    }
+
+    fn info(artists: &[&str], channel: &str, description: &str) -> YtDlpFullEntry {
+        YtDlpFullEntry {
+            release_year: None,
+            release_date: None,
+            album: None,
+            artist: None,
+            artists: Some(artists.iter().map(|s| s.to_string()).collect()),
+            track: None,
+            thumbnail: None,
+            thumbnails: None,
+            duration: None,
+            title: None,
+            uploader: Some(channel.to_string()),
+            channel: Some(channel.to_string()),
+            description: Some(description.to_string()),
+        }
+    }
+
+    #[test]
+    fn performer_credits_drop_writers_and_keep_requested_artist() {
+        let entry = info(
+            &[
+                "Drake",
+                "Central Cee",
+                "A. Graham",
+                "D. Degrate",
+                "H. Arsenault",
+                "K. Barua",
+                "O. Caesar-Su",
+            ],
+            "Drake",
+            "Producer: Harley Arsenault\nProducer: Kid Masterpiece\nMixer: Noel Cadastre",
+        );
+        assert_eq!(
+            performer_credits(&entry, &["Central Cee".to_string()], "On The Radar Freestyle"),
+            "Drake, Central Cee"
+        );
+    }
+
+    #[test]
+    fn performer_credits_keep_album_artist_and_drop_description_roles() {
+        let entry = info(
+            &["Central Cee", "J Hus", "3lackondabeat"],
+            "Central Cee",
+            "Producer: 3lackondabeat\nComposer: Central Cee",
+        );
+        assert_eq!(
+            performer_credits(&entry, &["Central Cee".to_string()], "SLAUGHTER"),
+            "Central Cee, J Hus"
+        );
+    }
+
+    #[test]
+    fn performer_credits_drop_unprotected_dj_credit_but_keep_hint() {
+        let entry = info(
+            &["DJ Khaled", "Central Cee", "DJ Random"],
+            "Central Cee",
+            "",
+        );
+        assert_eq!(
+            performer_credits(&entry, &["DJ Khaled".to_string()], "Song"),
+            "DJ Khaled, Central Cee"
+        );
+    }
+
+    fn test_track(id: &str, number: u32) -> Track {
+        Track {
+            id: id.to_string(),
+            title: id.to_string(),
+            artist: "Artist".to_string(),
+            album: String::new(),
+            album_artist: None,
+            year: String::new(),
+            track_number: number,
+            total_tracks: 3,
+            duration: 180,
+            cover_url: String::new(),
+            preview_url: None,
+            not_found_on_youtube: false,
+        }
+    }
+
+    #[test]
+    fn excluded_playlist_tracks_are_dropped_before_enrichment() {
+        let tracks = vec![
+            test_track("keep-1", 1),
+            test_track("-duplicate", 2),
+            test_track("keep-2", 3),
+        ];
+        let kept = drop_excluded_tracks(tracks, &["-duplicate".to_string()]);
+        assert_eq!(kept.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+                   ["keep-1", "keep-2"]);
+        assert_eq!(kept[0].total_tracks, 2);
+        assert_eq!(kept[1].track_number, 2);
     }
 }

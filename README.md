@@ -7,6 +7,7 @@
 - [Key Features](#key-features)
 - [Installation](#installation)
 - [Usage](#usage)
+- [CLI Usage](#cli-usage)
 - [Configuration](#configuration)
 - [Development](#development)
 - [Build](#build)
@@ -30,7 +31,7 @@
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (>= 26 recommended)
+- [Node.js](https://nodejs.org/) (current LTS or newer, `v*`)
 - [pnpm](https://pnpm.io/) (package manager)
 - [Rust](https://rust-lang.org/) (for Tauri backend, via `rustup`)
 - Tauri CLI: `pnpm tauri`
@@ -82,6 +83,84 @@ Runs Vite in development mode with Tauri. App runs at `http://localhost:1420` by
 
 - Click the play icon on any track row to open the inline YouTube preview player at the bottom of the window.
 - Expand/collapse the video component using the TV icon (YouTube tracks only).
+
+## CLI Usage
+
+`sonic-cli` is a command-line frontend built on the **same `sonic-core` engine** as the desktop app — identical source analysis, YouTube matching, format conversion, tagging, naming, and ZIP logic.
+
+### Build
+
+```bash
+cargo build              # builds the CLI by default (desktop app stays on v*)
+pnpm cli:binaries        # copies yt-dlp/ffmpeg/deno next to target/debug/sonic-cli
+```
+
+The desktop app is still a workspace member, but it is built explicitly via `pnpm tauri build`; plain `cargo build` only produces `target/debug/sonic-cli`.
+
+The sidecars can also be supplied with `--binaries-dir <DIR>` or the `SONIC_BINARIES_DIR` environment variable. Without those, the CLI falls back to `yt-dlp`, `ffmpeg`, and `deno` found on `PATH`.
+
+### Install to your PATH
+
+The installer downloads `sonic-cli`, the three sidecars, and all `ytm-*` / helper `.py` files from `crates/sonic-cli/src`. Tools go in `~/.sonic-cli`, and `get-catalog` plus `sonic-cli` launchers go in `~/.local/bin` (added to your PATH automatically).
+
+macOS / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TheeHk-blip/sonic-ripper/main/scripts/install-cli.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/TheeHk-blip/sonic-ripper/main/scripts/install-cli.ps1 -OutFile install-cli.ps1
+.\install-cli.ps1
+```
+
+Set `SONIC_VERSION` to a release that publishes `sonic-cli-<target>` assets (default `v1.0.7`); `SONIC_SIDECAR_TAG` defaults to `sidecar-binaries-v1`. Reopen your terminal after installing.
+
+`get-catalog` runs `ytm-artist-batch.py` and sets `SONIC_TOOLS_DIR` / `SONIC_BINARIES_DIR` for you. See `crates/sonic-cli/src/README-ytm-scripts.md` for the remaining environment variables.
+
+### Example
+
+```bash
+cargo run -p sonic-cli -- \
+  --url "https://open.spotify.com/album/..." \
+  --format flac --bitrate lossless \
+  --cookies ./cookies.txt \
+  --output-dir /path/to/music/library \
+  --mode folder \
+  --naming number_artist_title \
+  --folder-pattern year_album \
+  --skip-missing
+```
+
+The final output path (file or ZIP) is printed to stdout; progress and logs go to stderr, so it pipes cleanly into other tools.
+
+### Options
+
+| Option                             | Description                                                                              |
+| ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| `--url <URL>`                      | Spotify/YouTube URL, or a plain search query (required)                                  |
+| `--format <FORMAT>`                | `flac` (default), `mp3`, `m4a`, `wav`, `opus`, `mp4`, `webm`, `mkv`                      |
+| `--bitrate <BITRATE>`              | `lossless` (default), `128k`, `192k`, `256k`, `320k`                                     |
+| `--sample-rate <HZ>`               | Lossless sample rate (`44100` / `48000`)                                                 |
+| `--video-quality <QUALITY>`        | MP4 resolution cap (`360p` … `2160p`, `best`)                                            |
+| `--cookies <PATH>`                 | Netscape-format `cookies.txt` for YouTube bot checks                                     |
+| `--cookies-from-browser <BROWSER>` | Use a browser profile instead (`chrome`, `firefox`, …)                                   |
+| `--output-dir <DIR>`               | Saving directory (required unless already configured)                                    |
+| `--mode folder\|zip`               | `folder` (default) saves per playlist/album; `zip` writes one archive                    |
+| `--naming <PATTERN>`               | `number_artist_title` (default), `number_title`, `artist_title`, `title_artist`, `title` |
+| `--folder-pattern <PATTERN>`       | `album_artist` (default), `year_album`, `album`                                          |
+| `--is-album`                       | Apply album folder naming and metadata enrichment                                        |
+| `--playlist-name <NAME>`           | Override the playlist/album name used for the folder or ZIP                              |
+| `--concurrency <N>`                | Parallel downloads, 1–16 (default `6`)                                                   |
+| `--skip-missing`                   | Keep going when a track fails                                                            |
+| `--no-id3`                         | Skip metadata and cover art embedding                                                    |
+| `--ytdlp-clients <CLIENTS>`        | yt-dlp client chain, e.g. `web_music;default;tv`                                         |
+| `--config-dir <DIR>`               | Use a different directory for CLI settings                                               |
+| `--binaries-dir <DIR>`             | Directory containing the `sonic-*` sidecars                                              |
+
+The CLI keeps its own `settings.json` (under the OS app data dir for `sonic-ripper-cli`), so its flags don't overwrite the desktop app's saved settings. Values you pass for cookies, output directory, concurrency, and clients are remembered for later CLI runs.
 
 ## Configuration
 
@@ -141,17 +220,29 @@ src-tauri/
 ├── build.rs           # Tauri build script
 ├── gen/               # Generated code
 ├── capabilities/      # Feature capabilities
-└── src/               # Rust source code
+└── src/
+    ├── lib.rs         # Thin Tauri command wrappers + setup
+    ├── host.rs        # TauriHost: implements sonic-core::Host
+    └── main.rs        # Binary entry point
+crates/
+├── sonic-core/        # Shared engine (analysis, download, settings, naming, tags)
+│   └── src/host.rs    # Host seam: processes, events, data dir, cancellation
+└── sonic-cli/         # CLI frontend + its CliHost implementation
 ```
 
 ### Key Development Commands
 
-| Command        | Description                              |
-| -------------- | ---------------------------------------- |
-| `pnpm dev`     | Start development server + Tauri         |
-| `pnpm build`   | Build the frontend (Vite + TSC)          |
-| `pnpm tauri`   | Run Tauri commands (build, dev, preview) |
-| `pnpm preview` | Preview the built Vite app               |
+| Command                   | Description                                   |
+| ------------------------- | --------------------------------------------- |
+| `pnpm dev`                | Start development server + Tauri              |
+| `pnpm build`              | Build the frontend (Vite + TSC)               |
+| `pnpm tauri`              | Run Tauri commands (build, dev, preview)      |
+| `pnpm preview`            | Preview the built Vite app                    |
+| `pnpm cli -- --url ...`   | Run the CLI (`--` passes arguments through)   |
+| `pnpm cli:binaries`       | Copy the bundled tools next to the CLI binary |
+| `pnpm cli:build`          | Build the CLI in release mode                 |
+| `cargo build`             | Build only the CLI (workspace default)        |
+| `cargo check --workspace` | Type-check all Rust crates                    |
 
 ### Adding New Features
 
@@ -179,14 +270,7 @@ This compiles the Rust backend and packages the frontend. The output binary will
 
 ### Target Platforms
 
-The project is configured to build **AppImage** for Linux (as specified in `tauri.conf.json`). To build for other platforms, modify the `bundle.targets` field in `tauri.conf.json`:
-
-```json
-"bundle": {
-  "active": true,
-  "targets": ["appimage", "deb", "winget", "msi"]
-}
-```
+The project is configured to build for Linux, Windows & macOS
 
 ## Acknowledgments
 

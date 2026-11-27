@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["src-tauri", "crates/sonic-core", "crates/sonic-cli"]
+# The desktop app is already released at v*. Plain `cargo build` should
+# produce the CLI only; Tauri is still built explicitly via `pnpm tauri build`.
+default-members = ["crates/sonic-cli"]
+
+[workspace.package]
+version = "1.0.7"
+edition = "2021"
