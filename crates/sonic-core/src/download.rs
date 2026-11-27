@@ -1,15 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_shell::process::CommandEvent;
-use tauri_plugin_shell::ShellExt;
 use tokio::fs;
-use tokio::sync::Semaphore;
+use tokio::sync::{OnceCell, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::cancel::DownloadRegistry;
 use crate::error::{AppError, AppResult};
+use crate::host::{emit, HostRef, ProcessEvent};
 use crate::logger;
 use crate::models::Track;
 use crate::settings;
@@ -27,7 +25,8 @@ enum StreamKind {
     Video,
 }
 
-const AUDIO_CLIENT_CHAIN: &[Option<&str>] = &[Some("web_music"), None, Some("android,web"), Some("tv")];
+const AUDIO_CLIENT_CHAIN: &[Option<&str>] =
+    &[Some("web_music"), None, Some("android,web"), Some("tv")];
 const VIDEO_CLIENT_CHAIN: &[Option<&str>] = &[None, Some("web_embedded,tv"), Some("tv")];
 const RETRY_ON_BOT_CHALLENGE: bool = true;
 
@@ -353,6 +352,13 @@ struct TrackProgressPayload {
     stream: &'static str,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackDonePayload {
+    track_id: String,
+    ok: bool,
+}
+
 fn parse_yt_dlp_percent(line: &str) -> Option<u8> {
     let line = line.trim();
     if !line.starts_with("[download]") {
@@ -375,6 +381,10 @@ pub struct DownloadOptions {
     pub ytdlp_clients: Option<String>,
     pub naming_pattern: String,
     pub embed_id3_tags: bool,
+    /// Tags applied to every downloaded track.
+    pub extra_tags: Vec<(String, String)>,
+    /// Tags applied only to the track with the matching video/source id.
+    pub track_tags: HashMap<String, Vec<(String, String)>>,
 }
 
 fn resolve_naming_template(pattern: &str) -> &str {
@@ -574,19 +584,8 @@ fn is_bot_detected(stderr: &str) -> bool {
     error_lines(stderr).to_lowercase().contains("not a bot")
 }
 
-fn deno_sidecar_path() -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let name = if cfg!(windows) {
-        "sonic-deno.exe"
-    } else {
-        "sonic-deno"
-    };
-    let path = exe_dir.join(name);
-    path.exists().then_some(path)
-}
-
-fn append_js_runtime_arg(args: &mut Vec<String>) {
-    if let Some(deno_path) = deno_sidecar_path() {
+fn append_js_runtime_arg(app: &HostRef, args: &mut Vec<String>) {
+    if let Some(deno_path) = app.resolve_binary("sonic-deno") {
         args.push("--js-runtimes".into());
         args.push(format!("deno:{}", deno_path.to_string_lossy()));
     } else {
@@ -597,19 +596,8 @@ fn append_js_runtime_arg(args: &mut Vec<String>) {
     }
 }
 
-fn ffmpeg_sidecar_path() -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let name = if cfg!(windows) {
-        "sonic-ffmpeg.exe"
-    } else {
-        "sonic-ffmpeg"
-    };
-    let path = exe_dir.join(name);
-    path.exists().then_some(path)
-}
-
-fn append_ffmpeg_location_arg(args: &mut Vec<String>) {
-    if let Some(ffmpeg_path) = ffmpeg_sidecar_path() {
+fn append_ffmpeg_location_arg(app: &HostRef, args: &mut Vec<String>) {
+    if let Some(ffmpeg_path) = app.resolve_binary("sonic-ffmpeg") {
         args.push("--ffmpeg-location".into());
         args.push(ffmpeg_path.to_string_lossy().into_owned());
     } else {
@@ -621,9 +609,9 @@ fn append_ffmpeg_location_arg(args: &mut Vec<String>) {
 }
 
 async fn run_yt_dlp_streaming(
-    app: &AppHandle,
+    app: &HostRef,
     track_id: &str,
-    cmd: tauri_plugin_shell::process::Command,
+    args: Vec<String>,
     stream_labels: &'static [&'static str],
     registry: &DownloadRegistry,
     token: &CancellationToken,
@@ -632,10 +620,11 @@ async fn run_yt_dlp_streaming(
         return Err(AppError::Cancelled);
     }
 
-    let (mut rx, child) = cmd
-        .spawn()
+    let process = app
+        .spawn_stream("sonic-yt-dlp", args)
         .map_err(|e| AppError::YtDlpFailed(format!("failed to spawn yt-dlp sidecar: {e}")))?;
-    registry.set_child(track_id, child);
+    let mut rx = process.events;
+    registry.set_child(track_id, process.child);
 
     let mut stderr = String::new();
     let mut exit_code: Option<i32> = None;
@@ -654,7 +643,7 @@ async fn run_yt_dlp_streaming(
             },
         };
         match event {
-            CommandEvent::Stdout(bytes) => {
+            ProcessEvent::Stdout(bytes) => {
                 let line = String::from_utf8_lossy(&bytes);
                 let trimmed = line.trim();
 
@@ -662,7 +651,8 @@ async fn run_yt_dlp_streaming(
                     legs_started += 1;
                     if legs_started > 1 && !emitted_transcoding {
                         emitted_transcoding = true;
-                        let _ = app.emit(
+                        emit(
+                            app,
                             "track-progress",
                             TrackProgressPayload {
                                 track_id: track_id.to_string(),
@@ -678,7 +668,8 @@ async fn run_yt_dlp_streaming(
                 if legs_started <= 1 {
                     if let Some(raw_percent) = parse_yt_dlp_percent(&line) {
                         let stream = stream_labels.first().copied().unwrap_or("audio");
-                        let _ = app.emit(
+                        emit(
+                            app,
                             "track-progress",
                             TrackProgressPayload {
                                 track_id: track_id.to_string(),
@@ -690,7 +681,7 @@ async fn run_yt_dlp_streaming(
                     }
                 }
             }
-            CommandEvent::Stderr(bytes) => {
+            ProcessEvent::Stderr(bytes) => {
                 let line = String::from_utf8_lossy(&bytes);
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
@@ -702,15 +693,14 @@ async fn run_yt_dlp_streaming(
                     stderr.push('\n');
                 }
             }
-            CommandEvent::Error(e) => {
+            ProcessEvent::Error(e) => {
                 registry.clear_child(track_id);
                 logger::error(format!("yt-dlp process error: {e}"));
                 return Err(AppError::YtDlpFailed(format!("yt-dlp process error: {e}")));
             }
-            CommandEvent::Terminated(payload) => {
-                exit_code = payload.code;
+            ProcessEvent::Terminated(code) => {
+                exit_code = code;
             }
-            _ => {}
         }
     }
 
@@ -737,7 +727,7 @@ impl CookieAuth<'_> {
 }
 
 async fn download_audio(
-    app: &AppHandle,
+    app: &HostRef,
     track_id: &str,
     video_url: &str,
     work_dir: &Path,
@@ -786,7 +776,7 @@ async fn download_audio(
 }
 
 async fn download_audio_once(
-    app: &AppHandle,
+    app: &HostRef,
     track_id: &str,
     video_url: &str,
     work_dir: &Path,
@@ -798,10 +788,6 @@ async fn download_audio_once(
 ) -> AppResult<PathBuf> {
     let (format_selector, format_sort) = audio_format_args(target);
     let out_template = work_dir.join("audio.%(ext)s");
-    let mut cmd = app
-        .shell()
-        .sidecar("sonic-yt-dlp")
-        .map_err(|e| AppError::YtDlpFailed(format!("failed to resolve yt-dlp sidecar: {e}")))?;
 
     let mut args: Vec<String> = vec![
         "-f".into(),
@@ -818,15 +804,14 @@ async fn download_audio_once(
     ];
 
     append_player_client_arg(&mut args, client);
-    append_js_runtime_arg(&mut args);
+    append_js_runtime_arg(app, &mut args);
     cookies.append_to(&mut args);
 
     args.push("--".into());
     args.push(video_url.to_string());
-    cmd = cmd.args(args);
 
     let (stderr, exit_code) =
-        run_yt_dlp_streaming(app, track_id, cmd, &["audio"], registry, token).await?;
+        run_yt_dlp_streaming(app, track_id, args, &["audio"], registry, token).await?;
 
     if exit_code != Some(0) {
         logger::error(format!(
@@ -854,7 +839,7 @@ async fn download_audio_once(
 }
 
 async fn download_video(
-    app: &AppHandle,
+    app: &HostRef,
     track_id: &str,
     video_url: &str,
     work_dir: &Path,
@@ -907,7 +892,7 @@ async fn download_video(
 }
 
 async fn download_video_once(
-    app: &AppHandle,
+    app: &HostRef,
     track_id: &str,
     video_url: &str,
     work_dir: &Path,
@@ -919,11 +904,6 @@ async fn download_video_once(
     token: &CancellationToken,
 ) -> AppResult<PathBuf> {
     let out_template = work_dir.join("video.%(ext)s");
-
-    let mut cmd = app
-        .shell()
-        .sidecar("sonic-yt-dlp")
-        .map_err(|e| AppError::YtDlpFailed(format!("failed to resolve yt-dlp sidecar: {e}")))?;
 
     let height_cap = parse_height_cap(quality);
     let format_selector = video_format_selector(container, height_cap);
@@ -943,16 +923,15 @@ async fn download_video_once(
     ];
 
     append_player_client_arg(&mut args, client);
-    append_js_runtime_arg(&mut args);
-    append_ffmpeg_location_arg(&mut args);
+    append_js_runtime_arg(app, &mut args);
+    append_ffmpeg_location_arg(app, &mut args);
     cookies.append_to(&mut args);
 
     args.push("--".into());
     args.push(video_url.to_string());
-    cmd = cmd.args(args);
 
     let (stderr, exit_code) =
-        run_yt_dlp_streaming(app, track_id, cmd, &["video", "audio"], registry, token).await?;
+        run_yt_dlp_streaming(app, track_id, args, &["video", "audio"], registry, token).await?;
 
     if exit_code != Some(0) {
         if is_bot_detected(&stderr) {
@@ -1117,7 +1096,7 @@ fn image_dimensions(b: &[u8]) -> Option<(u32, u32)> {
 }
 
 async fn prepare_cover(
-    app: &AppHandle,
+    app: &HostRef,
     track_id: &str,
     cover: PathBuf,
     work_dir: &Path,
@@ -1187,6 +1166,85 @@ async fn prepare_cover(
     }
 }
 
+#[derive(Clone)]
+struct SharedCover {
+    bytes: Arc<Vec<u8>>,
+    ext: String,
+}
+
+/// Album playlists give every track the same cover URL. Downloading and
+/// converting it once per track wastes HTTP requests and ffmpeg work, so the
+/// prepared bytes are shared by every track in one batch (or one single).
+#[derive(Default)]
+struct SharedCoverCache {
+    cells: Mutex<HashMap<String, Arc<OnceCell<Option<SharedCover>>>>>,
+}
+
+impl SharedCoverCache {
+    fn cell(&self, url: &str) -> Arc<OnceCell<Option<SharedCover>>> {
+        let mut cells = self.cells.lock().unwrap_or_else(|e| e.into_inner());
+        cells
+            .entry(url.to_string())
+            .or_default()
+            .clone()
+    }
+
+    fn forget(&self, url: &str) {
+        self.cells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(url);
+    }
+}
+
+async fn shared_cover(
+    app: &HostRef,
+    url: &str,
+    needs_jpeg_png: bool,
+    track_id: &str,
+    registry: &DownloadRegistry,
+    token: &CancellationToken,
+    cache: &SharedCoverCache,
+) -> Option<SharedCover> {
+    if url.is_empty() {
+        return None;
+    }
+    let cell = cache.cell(url);
+    let prepared = cell
+        .get_or_init(|| async {
+            let dir = tempfile::tempdir().ok()?;
+            let raw = download_cover(url, dir.path()).await?;
+            let path = prepare_cover(
+                app,
+                track_id,
+                raw,
+                dir.path(),
+                needs_jpeg_png,
+                registry,
+                token,
+            )
+            .await
+            .ok()??;
+            let bytes = fs::read(&path).await.ok()?;
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("jpg")
+                .to_string();
+            Some(SharedCover {
+                bytes: Arc::new(bytes),
+                ext,
+            })
+        })
+        .await
+        .clone();
+    if prepared.is_none() && token.is_cancelled() {
+        // A cancelled first track must not poison the URL for later tracks.
+        cache.forget(url);
+    }
+    prepared
+}
+
 fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -1252,6 +1310,16 @@ fn escape_ffmetadata_value(s: &str) -> String {
     out
 }
 
+/// Vorbis/Opus comment keys are case-insensitive; write them consistently in
+/// lowercase. `METADATA_BLOCK_PICTURE` is a ffmpeg-specific envelope whose name
+/// must stay uppercase for cover art to be recognised.
+fn normalize_tag_key(key: &str) -> String {
+    if key.eq_ignore_ascii_case("METADATA_BLOCK_PICTURE") {
+        return "METADATA_BLOCK_PICTURE".to_string();
+    }
+    key.to_ascii_lowercase()
+}
+
 async fn write_ffmetadata_file(
     work_dir: &Path,
     track: &Track,
@@ -1274,6 +1342,22 @@ async fn write_ffmetadata_file(
         if let Some(tag) = track_tag_value(track) {
             content.push_str(&format!("track={tag}\n"));
         }
+    }
+
+    let track_extras = opts
+        .track_tags
+        .get(&track.id)
+        .or_else(|| opts.track_tags.get(&track.title));
+    for (key, value) in opts
+        .extra_tags
+        .iter()
+        .chain(track_extras.into_iter().flatten())
+    {
+        content.push_str(&format!(
+            "{}={}\n",
+            escape_ffmetadata_value(&normalize_tag_key(key)),
+            escape_ffmetadata_value(value)
+        ));
     }
 
     if let Some(pic) = picture_b64 {
@@ -1391,6 +1475,18 @@ async fn build_ffmpeg_args(
             args.push("-metadata".into());
             args.push(format!("track={tag}"));
         }
+        let track_extras = opts
+            .track_tags
+            .get(&track.id)
+            .or_else(|| opts.track_tags.get(&track.title));
+        for (key, value) in opts
+            .extra_tags
+            .iter()
+            .chain(track_extras.into_iter().flatten())
+        {
+            args.push("-metadata".into());
+            args.push(format!("{key}={value}"));
+        }
     }
 
     args.push(out_path.to_string_lossy().into());
@@ -1437,7 +1533,7 @@ fn build_ffmpeg_video_args(
 }
 
 async fn run_ffmpeg(
-    app: &AppHandle,
+    app: &HostRef,
     track_id: &str,
     args: &[String],
     registry: &DownloadRegistry,
@@ -1447,16 +1543,11 @@ async fn run_ffmpeg(
         return Err(AppError::Cancelled);
     }
 
-    let sidecar = app
-        .shell()
-        .sidecar("sonic-ffmpeg")
-        .map_err(|e| AppError::FfmpegFailed(format!("Failed to resolve ffmpeg sidecar: {e}")))?;
-
-    let (mut rx, child) = sidecar
-        .args(args)
-        .spawn()
+    let process = app
+        .spawn_stream("sonic-ffmpeg", args.to_vec())
         .map_err(|e| AppError::FfmpegFailed(format!("Failed to spawn ffmpeg sidecar: {e}")))?;
-    registry.set_child(track_id, child);
+    let mut rx = process.events;
+    registry.set_child(track_id, process.child);
 
     let mut stderr = String::new();
     let mut exit_code: Option<i32> = None;
@@ -1473,7 +1564,7 @@ async fn run_ffmpeg(
             },
         };
         match event {
-            CommandEvent::Stderr(bytes) => {
+            ProcessEvent::Stderr(bytes) => {
                 let line = String::from_utf8_lossy(&bytes);
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
@@ -1481,15 +1572,15 @@ async fn run_ffmpeg(
                 }
                 stderr.push_str(&line);
             }
-            CommandEvent::Terminated(payload) => {
-                exit_code = payload.code;
+            ProcessEvent::Terminated(code) => {
+                exit_code = code;
             }
-            CommandEvent::Error(e) => {
+            ProcessEvent::Error(e) => {
                 registry.clear_child(track_id);
                 logger::error(format!("ffmpeg process error: {e}"));
                 return Err(AppError::FfmpegFailed(format!("ffmpeg process error: {e}")));
             }
-            _ => {}
+            ProcessEvent::Stdout(_) => {}
         }
     }
 
@@ -1524,13 +1615,14 @@ async fn write_cookies_file(
 }
 
 async fn run_pipeline(
-    app: &AppHandle,
+    app: &HostRef,
     track: &Track,
     dest_folder: &Path,
     opts: &DownloadOptions,
     names: &OutputNames,
     registry: &DownloadRegistry,
     token: &CancellationToken,
+    covers: Arc<SharedCoverCache>,
 ) -> AppResult<PathBuf> {
     if token.is_cancelled() {
         return Err(AppError::Cancelled);
@@ -1576,13 +1668,14 @@ async fn run_pipeline(
             cookies_file_path.as_deref(),
             registry,
             token,
+            covers,
         )
         .await
     }
 }
 
 async fn run_audio_pipeline(
-    app: &AppHandle,
+    app: &HostRef,
     track: &Track,
     work_dir: &Path,
     dest_folder: &Path,
@@ -1591,6 +1684,7 @@ async fn run_audio_pipeline(
     cookies_file_path: Option<&str>,
     registry: &DownloadRegistry,
     token: &CancellationToken,
+    covers: Arc<SharedCoverCache>,
 ) -> AppResult<PathBuf> {
     let music_match = match youtube::source_video_match(track) {
         Some(source) => {
@@ -1642,9 +1736,30 @@ async fn run_audio_pipeline(
     }
     let track = &track;
 
-    let cover_url = track.cover_url.clone();
-    let cover_dir = work_dir.to_path_buf();
-    let cover_handle = tokio::spawn(async move { download_cover(&cover_url, &cover_dir).await });
+    let (_, extension) = codec_and_extension(&opts.format);
+    let embed_cover = opts.embed_id3_tags && extension != "wav";
+    let cover_handle = if embed_cover && !track.cover_url.is_empty() {
+        let cover_url = track.cover_url.clone();
+        let app_for_cover = app.clone();
+        let track_id = track.id.clone();
+        let registry_for_cover = app.registry();
+        let token_for_cover = token.clone();
+        let covers_for_task = covers.clone();
+        Some(tokio::spawn(async move {
+            shared_cover(
+                &app_for_cover,
+                &cover_url,
+                extension == "opus",
+                &track_id,
+                &registry_for_cover,
+                &token_for_cover,
+                &covers_for_task,
+            )
+            .await
+        }))
+    } else {
+        None
+    };
 
     let target_codec = native_codec_for_format(&opts.format);
     let audio_path = download_audio(
@@ -1662,29 +1777,25 @@ async fn run_audio_pipeline(
         token,
     )
     .await?;
-    let cover_path = cover_handle.await.ok().flatten();
-
-    let (_, extension) = codec_and_extension(&opts.format);
-    let cover_path = match cover_path {
-        Some(cover) if opts.embed_id3_tags && extension != "wav" => {
-            prepare_cover(
-                app,
-                &track.id,
-                cover,
-                work_dir,
-                extension == "opus",
-                registry,
-                token,
-            )
-            .await?
-        }
-        other => other,
+    let cover_path = match cover_handle {
+        Some(handle) => match handle.await.ok().flatten() {
+            Some(prepared) => {
+                let path = work_dir.join(format!("cover.{}", prepared.ext));
+                match fs::write(&path, prepared.bytes.as_ref()).await {
+                    Ok(()) => Some(path),
+                    Err(_) => None,
+                }
+            }
+            None => None,
+        },
+        None => None,
     };
     let filename = render_filename(&opts.naming_pattern, track, extension);
     fs::create_dir_all(dest_folder).await?;
     let out_path = names.claim(dest_folder, &filename);
     let tmp_path = partial_path(&out_path);
-    let _ = app.emit(
+    emit(
+        app,
         "track-progress",
         TrackProgressPayload {
             track_id: track.id.clone(),
@@ -1726,7 +1837,7 @@ async fn run_audio_pipeline(
 }
 
 async fn run_video_pipeline(
-    app: &AppHandle,
+    app: &HostRef,
     track: &Track,
     preview_url: &str,
     work_dir: &Path,
@@ -1760,7 +1871,8 @@ async fn run_video_pipeline(
     let out_path = names.claim(dest_folder, &filename);
     let tmp_path = partial_path(&out_path);
 
-    let _ = app.emit(
+    emit(
+        app,
         "track-progress",
         TrackProgressPayload {
             track_id: track.id.clone(),
@@ -1780,9 +1892,182 @@ async fn run_video_pipeline(
     Ok(out_path)
 }
 
-#[tauri::command]
+/// Case/separator-insensitive identity for a metadata key, so an override for
+/// `ALBUMARTIST` also replaces an existing `album_artist` tag instead of
+/// producing two values joined by a semicolon.
+fn tag_key_identity(key: &str) -> String {
+    key.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Rewrite tags on an existing file using the same ffmetadata path as the
+/// download pipeline, so Opus cover art survives the remux.
+pub async fn retag_file(app: HostRef, path: PathBuf, tags: Vec<(String, String)>) -> AppResult<()> {
+    if tags.is_empty() {
+        return Ok(());
+    }
+    let ffmpeg = app
+        .resolve_binary("sonic-ffmpeg")
+        .unwrap_or_else(|| PathBuf::from("ffmpeg"));
+    let ffprobe = PathBuf::from("ffprobe");
+    let path_str = path.to_string_lossy().to_string();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let original_perms = fs::metadata(&path).await.ok().map(|m| m.permissions());
+
+    let probe = tokio::process::Command::new(&ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream_tags",
+            "-of",
+            "json",
+            &path_str,
+        ])
+        .output()
+        .await?;
+    if !probe.status.success() {
+        return Err(AppError::FfmpegFailed(
+            String::from_utf8_lossy(&probe.stderr).trim().to_string(),
+        ));
+    }
+    let probe_json: serde_json::Value = serde_json::from_slice(&probe.stdout)?;
+    let existing = probe_json
+        .get("streams")
+        .and_then(|s| s.get(0))
+        .and_then(|s| s.get("tags"))
+        .and_then(|t| t.as_object());
+
+    let overrides: std::collections::HashSet<String> = tags
+        .iter()
+        .map(|(key, _)| tag_key_identity(key))
+        .collect();
+    let mut meta = String::from(";FFMETADATA1\n");
+    if let Some(tags_obj) = existing {
+        for (key, value) in tags_obj {
+            if overrides.contains(&tag_key_identity(key)) {
+                continue;
+            }
+            if let Some(value) = value.as_str() {
+                meta.push_str(&format!(
+                    "{}={}\n",
+                    escape_ffmetadata_value(&normalize_tag_key(key)),
+                    escape_ffmetadata_value(value)
+                ));
+            }
+        }
+    }
+    for (key, value) in &tags {
+        meta.push_str(&format!(
+            "{}={}\n",
+            escape_ffmetadata_value(&normalize_tag_key(key)),
+            escape_ffmetadata_value(value)
+        ));
+    }
+
+    let is_opus = ext.eq_ignore_ascii_case(".opus");
+    if is_opus {
+        // Opus stores its cover in METADATA_BLOCK_PICTURE, which ffprobe does
+        // not expose as a tag. Pull the attached picture back out and re-add
+        // it to the ffmetadata file so the remux keeps the artwork.
+        let cover = tokio::process::Command::new(&ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-i",
+                &path_str,
+                "-map",
+                "0:v:0",
+                "-c",
+                "copy",
+                "-f",
+                "image2pipe",
+                "-",
+            ])
+            .output()
+            .await;
+        if let Ok(cover) = cover {
+            if cover.status.success() && !cover.stdout.is_empty() {
+                let mime = if cover.stdout.starts_with(b"\x89PNG\r\n\x1a\n") {
+                    "image/png"
+                } else if cover.stdout.starts_with(b"RIFF") {
+                    "image/webp"
+                } else {
+                    "image/jpeg"
+                };
+                meta.push_str(&format!(
+                    "METADATA_BLOCK_PICTURE={}\n",
+                    escape_ffmetadata_value(&build_opus_picture_metadata(&cover.stdout, mime))
+                ));
+            }
+        }
+    }
+
+    let work = tempfile::Builder::new()
+        .prefix("sonic-retag-")
+        .tempdir()
+        .map_err(AppError::from)?;
+    let meta_path = work.path().join("tags.ffmetadata");
+    fs::write(&meta_path, meta).await?;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let out = tempfile::Builder::new()
+        .prefix(".sonic-retag-")
+        .suffix(&ext)
+        .tempfile_in(parent)
+        .map_err(AppError::from)?;
+    let out_path = out.path().to_string_lossy().to_string();
+    let meta_str = meta_path.to_string_lossy().to_string();
+
+    let mut args: Vec<String> = vec![
+        "-v".into(),
+        "error".into(),
+        "-y".into(),
+        "-i".into(),
+        path_str,
+        "-i".into(),
+        meta_str,
+        // Do not copy the source stream's tags: they would override the
+        // replacement values from the ffmetadata input.
+        "-map_metadata".into(),
+        "-1".into(),
+        "-map_metadata".into(),
+        "1".into(),
+    ];
+    if ext.eq_ignore_ascii_case(".opus") {
+        args.extend(["-map".into(), "0:a:0".into()]);
+    } else {
+        args.extend(["-map".into(), "0".into()]);
+    }
+    args.extend(["-c".into(), "copy".into(), out_path]);
+
+    let result = tokio::process::Command::new(&ffmpeg)
+        .args(&args)
+        .output()
+        .await?;
+    if !result.status.success() {
+        return Err(AppError::FfmpegFailed(
+            String::from_utf8_lossy(&result.stderr).trim().to_string(),
+        ));
+    }
+    out.persist(&path)
+        .map_err(|e| AppError::Io(e.to_string()))?;
+    if let Some(perms) = original_perms {
+        let _ = fs::set_permissions(&path, perms).await;
+    }
+    Ok(())
+}
+
 pub async fn download_track(
-    app: AppHandle,
+    app: HostRef,
     track: Track,
     opts: DownloadTrackArgs,
 ) -> AppResult<String> {
@@ -1832,7 +2117,7 @@ pub async fn download_track(
     options.youtube_cookies = saved.youtube_cookies;
     options.cookies_from_browser = saved.cookies_from_browser;
 
-    let registry = app.state::<DownloadRegistry>();
+    let registry = app.registry();
     let token = registry.begin_track(&track.id);
     let names = OutputNames::default();
     let result = run_pipeline(
@@ -1843,6 +2128,7 @@ pub async fn download_track(
         &names,
         &registry,
         &token,
+        Arc::new(SharedCoverCache::default()),
     )
     .await;
     registry.end_track(&track.id);
@@ -1875,6 +2161,10 @@ pub struct DownloadTrackArgs {
     pub is_album: bool,
     #[serde(default)]
     pub album_name: Option<String>,
+    #[serde(default)]
+    pub extra_tags: Vec<(String, String)>,
+    #[serde(default)]
+    pub track_tags: HashMap<String, Vec<(String, String)>>,
 }
 
 impl DownloadTrackArgs {
@@ -1889,6 +2179,8 @@ impl DownloadTrackArgs {
             cookies_from_browser: None,
             naming_pattern: self.naming_pattern,
             embed_id3_tags: self.embed_id3_tags,
+            extra_tags: self.extra_tags,
+            track_tags: self.track_tags,
         }
     }
 }
@@ -1915,15 +2207,18 @@ pub struct DownloadBatchArgs {
     pub is_album: bool,
     #[serde(default)]
     pub concurrency: Option<usize>,
+    #[serde(default)]
+    pub extra_tags: Vec<(String, String)>,
+    #[serde(default)]
+    pub track_tags: HashMap<String, Vec<(String, String)>>,
 }
 
 fn default_folder_naming_pattern() -> String {
     "album_artist".to_string()
 }
 
-#[tauri::command]
 pub async fn download_batch(
-    app: AppHandle,
+    app: HostRef,
     tracks: Vec<Track>,
     args: DownloadBatchArgs,
 ) -> AppResult<String> {
@@ -1943,7 +2238,7 @@ pub async fn download_batch(
         tracks.len(),
         args.playlist_name
     ));
-    let registry = app.state::<DownloadRegistry>();
+    let registry = app.registry();
     let base_folder = settings::require_download_folder(&app).await?;
 
     let collection_display_name = if args.is_album {
@@ -2017,6 +2312,8 @@ pub async fn download_batch(
         ytdlp_clients: settings::resolve_ytdlp_clients(&app, args.ytdlp_clients.as_deref()).await,
         naming_pattern: args.naming_pattern.clone(),
         embed_id3_tags: args.embed_id3_tags,
+        extra_tags: args.extra_tags.clone(),
+        track_tags: args.track_tags.clone(),
     });
 
     let batch_work_dir = if save_in_folder {
@@ -2044,6 +2341,7 @@ pub async fn download_batch(
     let semaphore = Arc::new(Semaphore::new(concurrency));
 
     let names = Arc::new(OutputNames::default());
+    let covers = Arc::new(SharedCoverCache::default());
 
     let mut handles = Vec::with_capacity(tracks.len());
     for track in tracks {
@@ -2064,19 +2362,38 @@ pub async fn download_batch(
         let sem = semaphore.clone();
         let opts = options.clone();
         let names = names.clone();
+        let covers = covers.clone();
         let dest = batch_dir_path.clone();
         let app_handle = app.clone();
         handles.push((
             track_id,
             tokio::spawn(async move {
                 let _permit = sem.acquire_owned().await.expect("semaphore closed");
-                let registry = app_handle.state::<DownloadRegistry>();
+                let registry = app_handle.registry();
                 let result = if token.is_cancelled() {
                     Err(AppError::Cancelled)
                 } else {
-                    run_pipeline(&app_handle, &track, &dest, &opts, &names, &registry, &token).await
+                    run_pipeline(
+                        &app_handle,
+                        &track,
+                        &dest,
+                        &opts,
+                        &names,
+                        &registry,
+                        &token,
+                        covers.clone(),
+                    )
+                    .await
                 };
                 registry.end_track(&track.id);
+                emit(
+                    &app_handle,
+                    "track-done",
+                    TrackDonePayload {
+                        track_id: track.id.clone(),
+                        ok: result.is_ok(),
+                    },
+                );
                 match &result {
                     Ok(_) => logger::info(format!("✓ {} - {}", track.artist, track.title)),
                     Err(e) if !matches!(e, AppError::Cancelled) => {
@@ -2192,4 +2509,28 @@ fn write_zip(files: &[PathBuf], zip_path: &Path) -> AppResult<()> {
         .map_err(|e| AppError::Other(format!("zip finish error: {e}")))?;
     buffered.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod cover_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cover_cache_shares_one_cell_per_url() {
+        let cache = SharedCoverCache::default();
+        let first = cache.cell("https://example.invalid/art.jpg");
+        let second = cache.cell("https://example.invalid/art.jpg");
+        let other = cache.cell("https://example.invalid/other.jpg");
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(!Arc::ptr_eq(&first, &other));
+
+        first.set(Some(SharedCover {
+            bytes: Arc::new(vec![1, 2, 3]),
+            ext: "jpg".to_string(),
+        })).ok();
+        assert_eq!(second.get().unwrap().as_ref().unwrap().bytes.as_ref(), &[1, 2, 3]);
+
+        cache.forget("https://example.invalid/art.jpg");
+        assert!(cache.cell("https://example.invalid/art.jpg").get().is_none());
+    }
 }

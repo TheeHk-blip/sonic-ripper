@@ -12,6 +12,7 @@ export default defineConfig([
   // Ignore build output, deps, Tauri/Rust artefacts, generated workers, logs
   globalIgnores([
     'dist/',
+    'target',
     'dist-ssr/',
     'node_modules/',
     'src-tauri/target/',

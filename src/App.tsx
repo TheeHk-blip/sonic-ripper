@@ -32,6 +32,7 @@ import { useVirtualizer } from './lib/useVirtualizer';
 import TrackRow from './components/TrackRow';
 import TrackListHeader from './components/TrackListHeader';
 import { SpotifyPathfinderSettings } from './components/PathFinderSettings';
+import { ReleaseNotesDialog } from './components/ReleaseNotesDialog';
 
 function friendlyError(err: unknown): string {
   const code = getErrorCode(err);
@@ -908,6 +909,8 @@ export default function App() {
       <AnimatePresence>
         {playingTrack && <MediaPlayer track={playingTrack} onClose={() => setPlayingTrack(null)} />}
       </AnimatePresence>
+
+      <ReleaseNotesDialog />
     </div>
   );
 }
