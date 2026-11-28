@@ -118,7 +118,10 @@ Invoke-WebRequest -Uri https://raw.githubusercontent.com/TheeHk-blip/sonic-rippe
 
 Set `SONIC_VERSION` to a release that publishes `sonic-cli-<target>` assets (default `v1.0.7`); `SONIC_SIDECAR_TAG` defaults to `sidecar-binaries-v1`. Reopen your terminal after installing.
 
-`get-catalog` runs `ytm-artist-batch.py` and sets `SONIC_TOOLS_DIR` / `SONIC_BINARIES_DIR` for you. See `crates/sonic-cli/src/README-ytm-scripts.md` for the remaining environment variables.
+`get-catalog` runs `ytm-artist-batch.py` and sets `SONIC_TOOLS_DIR` /
+`SONIC_BINARIES_DIR` for you. See the
+[YouTube Music helper scripts guide](crates/sonic-cli/src/README-ytm-scripts.md)
+for the remaining environment variables and options.
 
 ### Example
 
